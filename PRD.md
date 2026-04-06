@@ -40,6 +40,12 @@ stored as Parquet files queryable with DuckDB and glob patterns.
    tool explains precisely why and what is affected — it never silently skips analysis.
 8. **Self-describing.** The tool exposes its own protocol as a queryable artifact. An LLM
    always has access to the current enforcement specification by calling `get_protocol`.
+9. **Workflow-governing.** The tool does not only evaluate artifacts; it also tells the
+   caller which check or practice must happen next, when metrics are due, and when the
+   workflow is blocked by an unmet prerequisite.
+10. **Agent-aware.** The tool can distinguish concurrent callers by agent/session identity,
+    persist their reported state, and attribute behavior across planner, implementer,
+    reviewer, human, and CI actors.
 
 ---
 
@@ -662,6 +668,46 @@ llm_model:     "claude-sonnet-4-5"
 llm_id:        "claude-sonnet-4-5"
 ```
 
+### 10.4.1 Agent and session identity
+
+The MCP must distinguish not just the model family, but the active caller instance and its
+role in the workflow. This enables planner/implementer/reviewer separation, parent-child
+agent chains, and state handoff across retries.
+
+Common identity fields:
+```
+agent_id:         stable identifier for the current caller instance
+agent_kind:       "primary" | "planner" | "implementer" | "reviewer" | "fixer" | "human" | "ci" | "unknown"
+parent_agent_id:  optional parent or delegating agent
+session_id:       shared workflow session across cooperating agents
+run_id:           identifier for the current task/run within the session
+```
+
+These fields are supplied by the caller when available. Missing values are stored as
+`unknown` or `null`, never silently dropped.
+
+### 10.4.2 Workflow state model
+
+The MCP cannot inspect an LLM's hidden reasoning state. Instead, it maintains an explicit
+reported state per agent and per session.
+
+State fields:
+```
+current_goal
+current_phase
+working_set_paths[]
+changed_paths[]
+last_completed_check
+required_next_checks[]
+open_violations[]
+assumptions_declared
+metrics_due
+summary_from_agent
+```
+
+The caller reports this state through dedicated workflow tools. The server responds with
+computed obligations such as `must_call_next`, `should_call_metrics`, and `blocked_by`.
+
 ### 10.5 Monorepo strategy
 
 **Global config — default behavior:**
@@ -768,6 +814,7 @@ ORDER BY total_supersessions DESC
 project_path, project_name, org, repo, service
 timestamp (ISO8601), git_commit (full), git_commit_short, branch
 llm_provider, llm_model, llm_id
+agent_id, agent_kind, parent_agent_id, session_id, run_id
 gate, triggered_by, gate_status, duration_ms
 results: [{ criterion_id, status, detail, evidence[] }]
 ```
@@ -792,6 +839,21 @@ original_artifact, replacement_artifact, artifact_type
 assumption_id, assumption_text, assumption_basis
 invalidated_by, days_to_invalidation
 llm_model (of original author)
+agent_id, agent_kind, session_id, run_id
+```
+
+**Agent state record:**
+```
+project_path, org, repo, service
+timestamp, git_commit, branch
+llm_provider, llm_model, llm_id
+agent_id, agent_kind, parent_agent_id, session_id, run_id
+current_goal, current_phase
+working_set_paths[], changed_paths[]
+last_completed_check, required_next_checks[]
+open_violations[]
+assumptions_declared, metrics_due
+summary_from_agent
 ```
 
 ### 11.2 Per-project metrics
@@ -890,6 +952,8 @@ using the tool as the single source of truth for its own protocol.
 4. Assumption protocol — the format, the invalidation flow, what triggers supersession
 5. Tool call guidance — which tool to call at each workflow stage and why
 6. Current thresholds — the active configuration for all tunable checks
+7. Workflow policy — when the caller must report state, when metrics are due, and how
+   agent roles change the recommended next action
 
 ### 13.2 Gate enforcement
 
@@ -946,6 +1010,16 @@ using the tool as the single source of truth for its own protocol.
 | `get_traceability(path)` | Traceability graph from stories to tests |
 | `get_compliance_score(path)` | Current weighted compliance score |
 
+### 13.6.1 Workflow governance
+
+| Tool | Description |
+|------|-------------|
+| `begin_session(path, agent_id, agent_kind, parent_agent_id?, session_id?)` | Registers an agent session and returns initial workflow obligations |
+| `report_agent_state(path, agent_id, state)` | Persists caller-reported workflow state, changed files, and open violations |
+| `get_next_action(path, agent_id)` | Returns computed next required checks, blocking prerequisites, and whether metrics should run now |
+| `list_agent_state(path, session_id?)` | Lists active or recent agents and their latest reported state for the project/session |
+| `close_session(path, agent_id)` | Marks the agent session complete and persists final state |
+
 ### 13.7 Common input schema
 
 All tools accept:
@@ -953,7 +1027,26 @@ All tools accept:
 {
   "path":   "string (optional, defaults to cwd)",
   "format": "text | json | mermaid (optional, defaults to text)",
-  "llm":    "string (optional, identifies the calling model)"
+  "llm":    "string (optional, identifies the calling model)",
+  "agent_id": "string (optional, identifies the calling agent instance)",
+  "agent_kind": "string (optional, identifies the caller role)",
+  "parent_agent_id": "string (optional, identifies the parent/delegating agent)",
+  "session_id": "string (optional, identifies the shared workflow session)",
+  "run_id": "string (optional, identifies the current task/run)"
+}
+```
+
+Tool responses that advance or evaluate workflow should include a machine-readable
+`workflow` block:
+```json
+{
+  "phase": "requirements | design | tasks | implementation | review | metrics",
+  "must_call_next": ["tool-or-gate identifiers"],
+  "should_call_metrics": true,
+  "must_report_state": true,
+  "blocked": false,
+  "blocked_by": [],
+  "notes": ["caller guidance derived from current project state"]
 }
 ```
 
@@ -1018,6 +1111,8 @@ All tools accept:
 | Graceful | Missing artifacts, missing tools, and install failures produce structured output — never unhandled errors |
 | Transparent | Every unavailable metric states precisely why and what would enable it |
 | Self-describing | `get_protocol` always returns the current enforcement spec. No LLM needs external documentation to follow the methodology |
+| Workflow-governing | The server computes next required actions and metrics obligations without relying on hidden model state |
+| Agent-aware | Concurrent agents can be distinguished, attributed, and coordinated through explicit session state |
 
 ---
 
@@ -1044,6 +1139,8 @@ All tools accept:
 | 5 | Stryker: generate default config if absent, or require one? | TBD |
 | 6 | Mutation testing for monorepos: score per service or aggregate? | TBD |
 | 7 | `get_protocol` versioning: how does an LLM detect protocol changes between sessions? | TBD |
+| 8 | Should `agent_id` be caller-supplied only, or may the server mint one when absent? | TBD |
+| 9 | How long should agent/session state be retained before expiry or archival? | TBD |
 
 ---
 
@@ -1055,4 +1152,5 @@ All tools accept:
 4. **ADR-003** — Bundled AST walkers vs lizard-first
 5. **ADR-004** — Mutation testing execution model
 6. **ADR-005** — `get_protocol` format and versioning strategy
-7. **Implementation** — gate-enforced, story-driven, tool verifying itself
+7. **Stories for workflow governance** — agent identity, session state, and next-action policy
+8. **Implementation** — gate-enforced, story-driven, tool verifying itself

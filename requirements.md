@@ -403,6 +403,294 @@ Example: Diff check runs at root regardless of service config
   Then the diff check runs once at the repo level
   And the Parquet file is written to the `root/` service path
 
+Example: A node_modules subdirectory manifest is rejected as a service path
+  Given a project root where the only `package.json` is present inside a `node_modules/` subdirectory
+  When any tool is called with the project root as `path`
+  Then no service is registered for the `node_modules` path
+  And a fallback `root` service is returned
+
+---
+
+## Feature F-17: Rust and WASM Language Support
+
+### Rule R-41: Validate the dependency check discovers Rust toolchain components
+Example: Rust toolchain components are present and each listed as installed
+  Given cargo, rustc, and wasm-pack are each present on the system path
+  When check_dependencies is called
+  Then cargo, rustc, and wasm-pack are each listed as installed
+  And the version string for each is included in the result
+
+Example: A missing Rust toolchain component is reported with install guidance
+  Given cargo and rustc are present on the system path but wasm-pack is absent
+  When check_dependencies is called
+  Then wasm-pack is listed as missing
+  And an install command is shown for each available package manager
+
+### Rule R-42: Validate Rust source files are eligible for mutation testing via cargo-mutants
+Example: Mutation score is computed for a Rust project with cargo-mutants installed
+  Given a Rust project with .rs source files and cargo-mutants present on the system path
+  When check_mutation_score is called
+  Then a mutation score is returned
+  And the result includes the count of mutants generated and the count killed
+
+Example: Absent cargo-mutants produces a structured missing-tool result
+  Given a Rust project with .rs source files and no cargo-mutants installation on the system path
+  When check_mutation_score is called
+  Then cargo-mutants is listed as the missing tool
+  And an install command is shown
+  And no partial mutation score is returned
+
+### Rule R-43: Validate G5 executability check executes cargo test for Rust projects
+Example: cargo test outcome is included in the executability result
+  Given a Rust project with test files in a tests/ directory and cargo present on the system path
+  When check_executability is called
+  Then cargo test is executed
+  And its exit code is included in the criterion E-1 result
+
+Example: A failing cargo test run produces a BLOCK result
+  Given a Rust project where cargo test exits with a non-zero status
+  When check_executability is called
+  Then criterion E-1 status is BLOCK
+  And the cargo test stderr output is included in the result
+
+### Rule R-44: Validate G5 detects wasm-pack test as the test command for WASM-targeted Rust projects
+Example: wasm-pack test is identified as the test command for a WASM project
+  Given a Rust project with a Cargo.toml file containing wasm-bindgen as a dependency and wasm-pack present on the system path
+  When check_executability is called
+  Then wasm-pack test --headless is listed as the detected test command in the result
+
+Example: A WASM project with wasm-pack absent surfaces a warning and falls back to cargo test
+  Given a Rust project with a Cargo.toml file containing wasm-bindgen as a dependency and wasm-pack absent from the system path
+  When check_executability is called
+  Then a WARNING is returned noting wasm-pack is absent
+  And cargo test is listed as the fallback test command in the result
+
+---
+
+## Feature F-18: Story-First Enforcement
+
+### Rule R-45: Validate a story artifact must exist before implementation tasks proceed
+Example: No story artifact is present for any task
+  Given no story file is present in the stories/ directory
+  When check_tasks is called
+  Then criterion S-5 returns BLOCK
+  And the response lists the identifiers that have no matching story
+
+Example: A story artifact is present and linked for a task
+  Given a story file is present in the stories/ directory with a matching identifier for a task
+  When check_tasks is called
+  Then the story is shown as linked in the S-5 result
+
+### Rule R-46: Validate a story must pass artifact validation before gate checks proceed
+Example: Story file has missing required sections
+  Given a story file is present in the stories/ directory with no acceptance criteria section
+  When check_story is called
+  Then criterion S-2 returns VIOLATION
+  And gate check results include a prerequisite note referencing the story validation failure
+
+Example: Story file with all required sections passes validation
+  Given a story file with an intent section, an acceptance criteria section, and an assumptions section all present
+  When check_story is called
+  Then all criteria for that story return PASS
+
+---
+
+## Feature F-19: ADR Blocking on Structural Diff Triggers
+
+### Rule R-47: Validate a new dependency in a diff blocks until a corresponding ADR is present
+Example: New dependency is present in the diff with no matching ADR
+  Given a new dependency entry is present in a manifest file within the staged diff
+  And no ADR file in the adr/ directory references that dependency name
+  When check_diff is called
+  Then criterion D-ADR-1 returns BLOCK
+  And the dependency name and the expected ADR path are listed in the response
+
+Example: New dependency is present in the diff with a matching ADR
+  Given a new dependency entry is present in a manifest file within the staged diff
+  And an ADR file in the adr/ directory references that dependency name
+  When check_diff is called
+  Then criterion D-ADR-1 passes for that dependency
+
+### Rule R-48: Validate a security constraint change in a diff blocks until a corresponding ADR is present
+Example: Security-related file change is present in the diff with no matching ADR
+  Given a security-related file change is present in the staged diff
+  And no ADR file in the adr/ directory references that change
+  When check_diff is called
+  Then criterion D-ADR-2 returns BLOCK
+  And the changed file name and the expected ADR path are listed in the response
+
+Example: Security-related file change is present in the diff with a matching ADR
+  Given a security-related file change is present in the staged diff
+  And an ADR file in the adr/ directory references the changed file or security domain
+  When check_diff is called
+  Then criterion D-ADR-2 passes for that change
+
+### Rule R-49: Validate a deployment topology change in a diff blocks until a corresponding ADR is present
+Example: Deployment manifest change is present in the diff with no matching ADR
+  Given a deployment manifest change is present in the staged diff
+  And no ADR file in the adr/ directory references that change
+  When check_diff is called
+  Then criterion D-ADR-3 returns BLOCK
+  And the changed file name and the expected ADR path are listed in the response
+
+Example: Deployment manifest change is present in the diff with a matching ADR
+  Given a deployment manifest change is present in the staged diff
+  And an ADR file in the adr/ directory references the changed file
+  When check_diff is called
+  Then criterion D-ADR-3 passes for that change
+
+---
+
+## Feature F-20: Reconciliation Gate
+
+### Rule R-50: Validate README claims are consistent with actual repository artifacts
+Example: README claim has no matching artifact
+  Given a README file contains a claim that a feature is implemented
+  And no source file with a name matching that feature is present in the repository
+  When check_reconciliation is called
+  Then criterion RC-1 returns VIOLATION
+  And the claimed feature and the missing artifact path are listed in the response
+
+Example: README claim is consistent with a present artifact
+  Given a README file contains a claim that a feature is implemented
+  And a source file with a name matching that feature is present in the repository
+  When check_reconciliation is called
+  Then criterion RC-1 passes for that claim
+
+### Rule R-51: Validate task completion claims are consistent with artifact content
+Example: A completed task references a missing artifact path
+  Given a tasks file has a checked checkbox for a task that references an artifact path
+  And no file at that artifact path is present in the repository
+  When check_reconciliation is called
+  Then criterion RC-2 returns VIOLATION
+  And the task text and the missing artifact path are listed in the response
+
+Example: A completed task references an artifact that is present in the repository
+  Given a tasks file has a checked checkbox for a task that references an artifact path
+  And a file at that artifact path is present in the repository
+  When check_reconciliation is called
+  Then criterion RC-2 passes for that task
+
+---
+
+## Feature F-21: Evidence Artifacts
+
+### Rule R-52: Validate verification evidence must be present when a release artifact exists
+Example: Release artifact is present with no verification file
+  Given a release artifact file is present in the release/ directory
+  And no verification file in the verification/ directory references that release artifact
+  When check_evidence is called
+  Then criterion EV-1 returns VIOLATION
+  And the release artifact name and the expected verification file path are listed in the response
+
+Example: Release artifact is present with a matching verification file
+  Given a release artifact file is present in the release/ directory
+  And a verification file in the verification/ directory references that release artifact
+  When check_evidence is called
+  Then criterion EV-1 passes for that release artifact
+
+### Rule R-53: Validate benchmark results must be present for performance-sensitive components
+Example: Performance-sensitive component has no benchmark result file
+  Given a source file contains a benchmark annotation
+  And no benchmark result file in the benchmarks/ directory references that component
+  When check_evidence is called
+  Then criterion EV-2 returns WARNING
+  And the component name and the expected benchmark file path are listed in the response
+
+Example: Performance-sensitive component has a benchmark result file
+  Given a source file contains a benchmark annotation
+  And a benchmark result file in the benchmarks/ directory references that component
+  When check_evidence is called
+  Then criterion EV-2 passes for that component
+
+---
+
+## Feature F-22: Workflow Governance
+
+### Rule R-54: Validate the MCP returns machine-readable next-action guidance after workflow-relevant tool calls
+Example: Next action after a passing gate
+  Given a gate check completes without BLOCK or VIOLATION
+  When the response is returned
+  Then it includes a `workflow.must_call_next` field
+  And the field names the next required check or workflow action
+
+Example: Next action when the workflow is blocked
+  Given a gate check or prerequisite validator returns BLOCK
+  When the response is returned
+  Then `workflow.blocked` is `true`
+  And `workflow.blocked_by` lists the unmet prerequisite
+
+### Rule R-55: Validate the MCP indicates when metrics should be run
+Example: Metrics due after implementation-oriented work
+  Given an agent has reported changed implementation files
+  When `get_next_action` is called
+  Then the response includes `should_call_metrics: true`
+  And the response explains why metrics are due
+
+Example: Metrics not due during early spec authoring
+  Given the workflow is still in intent or requirements drafting
+  When `get_next_action` is called
+  Then `should_call_metrics` is `false`
+
+Example: Metrics guidance is absent from a workflow response
+  Given a workflow-relevant tool response omits the `workflow.should_call_metrics` field
+  When the caller inspects the response
+  Then the response is rejected as incomplete
+  And the omission is reported as a workflow contract failure
+
+### Rule R-56: Validate the MCP can request explicit agent state instead of assuming hidden model state
+Example: Agent reports current state
+  Given an agent has an `agent_id`
+  When `report_agent_state` is called with goal, phase, changed paths, and open violations
+  Then the server persists that state
+  And subsequent workflow decisions use the reported state
+
+Example: Workflow response requires state reporting
+  Given a workflow-relevant tool call completes
+  When the response is returned
+  Then the `workflow` block includes `must_report_state`
+  And that field is `true` when the server requires an explicit state update
+
+---
+
+## Feature F-23: Agent Identity and Session Attribution
+
+### Rule R-57: Validate the MCP distinguishes agents of the same or different kinds
+Example: Two implementer agents in one session
+  Given two callers use the same model but different `agent_id` values
+  When both report state in the same `session_id`
+  Then the server stores them as distinct agents
+  And their state histories do not overwrite each other
+
+Example: Parent-child agent relationship is recorded
+  Given an implementer agent is delegated work by a planner agent
+  When the implementer reports state with `parent_agent_id`
+  Then the stored state links the implementer to the planner
+
+### Rule R-58: Validate agent and session identity are attached to persisted records
+Example: Check record includes agent metadata
+  Given a workflow-aware tool call is made with `agent_id`, `agent_kind`, and `session_id`
+  When the resulting record is persisted
+  Then the Parquet record includes those identity fields
+  And they are queryable in metrics and rollups
+
+Example: Missing agent metadata remains visible
+  Given a tool call omits agent metadata
+  When the resulting record is persisted
+  Then the missing fields are stored as `unknown` or `null`
+  And the omission is not silently hidden
+
+### Rule R-59: Validate the MCP exposes agent-session workflow tools
+Example: Session start
+  Given a caller wants to begin governed work on a project
+  When `begin_session` is called
+  Then the response returns the initial workflow obligations for that agent
+
+Example: Session state listing
+  Given multiple agents have reported state for a project session
+  When `list_agent_state` is called
+  Then the response lists each agent with its latest known phase and summary
+
 ---
 
 ## Assumptions

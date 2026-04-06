@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "fs";
 import { basename, dirname, extname, join, resolve } from "path";
-import type { CriterionResult, GateStatus, LLMIdentity, ResolvedConfig, ServiceInfo } from "./types.js";
+import type { ActorIdentity, CriterionResult, GateStatus, ResolvedConfig, ServiceInfo } from "./types.js";
 import { detectCertaintyLanguage } from "./nlp.js";
 import { getThreshold } from "./config.js";
-import { buildFilePath, buildStoragePaths, writeRecord } from "./storage.js";
+import { buildFilePath, buildStoragePaths, globPattern, runDuckQuery, writeRecord } from "./storage.js";
+import { actorFields } from "./workflow.js";
 
 export interface AssumptionRow {
   id: string;
@@ -391,7 +392,7 @@ export function invalidateAssumption(
   reason: string,
   service: ServiceInfo,
   config: ResolvedConfig,
-  llm: LLMIdentity
+  llm: ActorIdentity
 ): InvalidateAssumptionResult | { error: string; code: string; detail: string } {
   const fullPath = resolve(artifactPath);
   const originalText = readText(fullPath);
@@ -436,8 +437,15 @@ export function invalidateAssumption(
   const storage = buildStoragePaths(service.rootPath, service, config.value.metrics.db_path);
   const filePath = buildFilePath(storage, llm, "supersession", now);
   writeRecord(filePath, {
-    schema_version: 1,
+    schema_version: 2,
+    check_type: "supersession",
     timestamp: now.toISOString(),
+    project_path: service.rootPath,
+    org: storage.org,
+    repo: storage.repo,
+    service: storage.service,
+    git_commit: storage.commit8,
+    branch: storage.branch,
     original_artifact: fullPath,
     replacement_artifact: fullPath,
     archive_artifact: archivePath,
@@ -448,9 +456,7 @@ export function invalidateAssumption(
     reason,
     original_model: readOriginalModel(originalText),
     days_to_invalidation: originalDaysToInvalidation,
-    llm_provider: llm.provider,
-    llm_model: llm.model,
-    llm_id: llm.id,
+    ...actorFields(llm),
   });
 
   return {
@@ -494,31 +500,18 @@ export function getSupersessionHistory(
   const root = join(storage.storageRoot, storage.org, storage.repo, storage.service);
   const events: SupersessionHistoryResult["events"] = [];
   const sinceValue = since ? Date.parse(since) : null;
-
-  function scan(dir: string) {
-    let entries: string[] = [];
-    try { entries = readdirSync(dir); } catch { return; }
-    for (const entry of entries) {
-      const full = join(dir, entry);
-      let stat;
-      try { stat = statSync(full); } catch { continue; }
-      if (stat.isDirectory()) scan(full);
-      else if (/_supersession_/.test(entry) && entry.endsWith(".jsonl")) {
-        for (const line of readText(full).split(/\r?\n/).filter(Boolean)) {
-          try {
-            const parsed = JSON.parse(line) as SupersessionHistoryResult["events"][number];
-            const stamp = Date.parse(parsed.timestamp);
-            if (sinceValue && !Number.isNaN(stamp) && stamp < sinceValue) continue;
-            if (artifactType && parsed.artifact_type !== artifactType) continue;
-            if (!resolve(parsed.original_artifact).startsWith(resolve(targetPath))) continue;
-            events.push(parsed);
-          } catch {}
-        }
-      }
-    }
+  const rows = runDuckQuery(`
+    SELECT *
+    FROM read_parquet('${globPattern(root).replace(/'/g, "''")}', union_by_name=true)
+    WHERE check_type = 'supersession'
+  `);
+  for (const parsed of rows as SupersessionHistoryResult["events"]) {
+    const stamp = Date.parse(parsed.timestamp);
+    if (sinceValue && !Number.isNaN(stamp) && stamp < sinceValue) continue;
+    if (artifactType && parsed.artifact_type !== artifactType) continue;
+    if (!resolve(parsed.original_artifact).startsWith(resolve(targetPath))) continue;
+    events.push(parsed);
   }
-
-  scan(root);
   events.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   return { path: resolve(targetPath), events, durationMs: Date.now() - start };
 }

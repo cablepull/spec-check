@@ -31,6 +31,12 @@ afterEach(() => {
   }
 });
 
+function makeConfigWithPassingTestCommand() {
+  const value = structuredClone(DEFAULT_CONFIG);
+  value.test_commands = [`${process.execPath} -e "process.exit(0)"`];
+  return { value, sources: {} };
+}
+
 describe("gate5", () => {
   it("R-18 blocks when no test files exist", async () => {
     const root = makeProject();
@@ -67,7 +73,7 @@ describe("gate5", () => {
       ].join("\n"),
       "utf-8"
     );
-    const result = await runGate5(root, root, { value: structuredClone(DEFAULT_CONFIG), sources: {} });
+    const result = await runGate5(root, root, makeConfigWithPassingTestCommand());
     expect(result.status).toBe("PASS");
     expect(result.criteria.find((item) => item.id === "E-1")?.status).toBe("PASS");
     expect(result.criteria.find((item) => item.id === "E-2")?.status).toBe("PASS");

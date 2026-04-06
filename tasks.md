@@ -223,6 +223,97 @@
 - [ ] Aggregate per-service results into one response envelope in aggregated mode (Rule: services are detected automatically for known monorepo structures)
 - [ ] Implement `ServiceMap` object: expose to all components for spec artifact path and Parquet path resolution (Rule: services are detected automatically for known monorepo structures)
 
+## Story 023 — Rust and WASM Language Support
+
+- [ ] Add cargo to the dependency registry: probe `cargo --version`, install guidance pointing to rustup.rs (Rule: the dependency check discovers Rust toolchain components)
+- [ ] Add rustc to the dependency registry: probe `rustc --version`, install guidance pointing to rustup.rs (Rule: the dependency check discovers Rust toolchain components)
+- [ ] Add wasm-pack to the dependency registry: probe `wasm-pack --version`, install via `cargo install wasm-pack` (Rule: the dependency check discovers Rust toolchain components)
+- [ ] Add cargo runtime probe to `detectRuntimes()` using the existing `probeBinary` mechanism (Rule: the dependency check discovers Rust toolchain components)
+- [ ] Add rustc runtime probe to `detectRuntimes()` using the existing `probeBinary` mechanism (Rule: the dependency check discovers Rust toolchain components)
+- [ ] Add wasm-pack runtime probe to `detectRuntimes()` using the existing `probeBinary` mechanism (Rule: the dependency check discovers Rust toolchain components)
+- [ ] Add `"rust"` to the `MutationLanguage` union type in `mutation.ts` (Rule: Rust source files are eligible for mutation testing via cargo-mutants)
+- [ ] Add `.rs` extension mapping to `LANGUAGE_BY_EXT` in `mutation.ts` targeting `"rust"` (Rule: Rust source files are eligible for mutation testing via cargo-mutants)
+- [ ] Add cargo-mutants to the dependency registry: probe `cargo mutants --version`, install via `cargo install cargo-mutants` (Rule: Rust source files are eligible for mutation testing via cargo-mutants)
+- [ ] Implement cargo-mutants invocation by running `cargo mutants --json` in the project root (Rule: Rust source files are eligible for mutation testing via cargo-mutants)
+- [ ] Implement cargo-mutants JSON output parser mapping mutants_generated, mutants_killed, score to the standard mutation schema (Rule: Rust source files are eligible for mutation testing via cargo-mutants)
+- [ ] Apply MT-1 through MT-2 threshold checks to cargo-mutants results using the existing threshold evaluation path (Rule: Rust source files are eligible for mutation testing via cargo-mutants)
+- [ ] Add Cargo.toml presence check to G5 to activate the Rust test runner path (Rule: G5 executability check executes cargo test for Rust projects)
+- [ ] Implement `cargo test` subprocess execution in G5 with exit code capture (Rule: G5 executability check executes cargo test for Rust projects)
+- [ ] Capture cargo test stderr output for inclusion in the E-1 criterion result on non-zero exit (Rule: G5 executability check executes cargo test for Rust projects)
+- [ ] Implement wasm-bindgen dependency detection by scanning the Cargo.toml `[dependencies]` section for the wasm-bindgen key (Rule: G5 detects wasm-pack test as the test command for WASM-targeted Rust projects)
+- [ ] Use `wasm-pack test --headless` as the G5 test command for projects where Cargo.toml contains wasm-bindgen (Rule: G5 detects wasm-pack test as the test command for WASM-targeted Rust projects)
+- [ ] Return a WARNING noting wasm-pack absence for WASM projects where wasm-pack is not on the system path (Rule: G5 detects wasm-pack test as the test command for WASM-targeted Rust projects)
+- [ ] Set `cargo test` as the G5 fallback test command for WASM projects where wasm-pack is absent (Rule: G5 detects wasm-pack test as the test command for WASM-targeted Rust projects)
+
+## Story 024 — Story-First Enforcement
+
+- [ ] Add story artifact discovery to check_tasks: scan the stories/ directory for .md files at gate entry (Rule: story artifact must exist before implementation tasks proceed)
+- [ ] Implement S-5 criterion: return BLOCK in check_tasks output when no story file is found in the stories/ directory (Rule: story artifact must exist before implementation tasks proceed)
+- [ ] List the identifiers with no matching story in the S-5 BLOCK evidence field (Rule: story artifact must exist before implementation tasks proceed)
+- [ ] Wire story validation into the gate prerequisite chain so a story with missing required sections emits a prerequisite note in gate results (Rule: story must pass artifact validation before gate checks proceed)
+- [ ] Expose a prerequisite note in the gate check result payload referencing the story validation failure when S-2 returns VIOLATION (Rule: story must pass artifact validation before gate checks proceed)
+
+## Story 025 — ADR Blocking on Structural Diff Triggers
+
+- [ ] Implement D-ADR-1 criterion: detect new dependency entries in manifest files from the diff payload (Rule: new dependency in a diff blocks until a corresponding ADR is present)
+- [ ] Scan the adr/ directory for ADR files whose content references the detected dependency name (Rule: new dependency in a diff blocks until a corresponding ADR is present)
+- [ ] Return BLOCK from D-ADR-1 with the dependency name in the evidence field when no matching ADR is found (Rule: new dependency in a diff blocks until a corresponding ADR is present)
+- [ ] Implement D-ADR-2 criterion: detect security-related file changes in the diff by matching file names against a security signal keyword list (Rule: security constraint change in a diff blocks until a corresponding ADR is present)
+- [ ] Scan the adr/ directory for ADR files referencing the changed security file or security domain (Rule: security constraint change in a diff blocks until a corresponding ADR is present)
+- [ ] Return BLOCK from D-ADR-2 with the changed file name in the evidence field when no matching security ADR is found (Rule: security constraint change in a diff blocks until a corresponding ADR is present)
+- [ ] Implement D-ADR-3 criterion: detect deployment manifest changes in the diff by file extension patterns (Rule: deployment topology change in a diff blocks until a corresponding ADR is present)
+- [ ] Scan the adr/ directory for ADR files referencing the changed deployment file (Rule: deployment topology change in a diff blocks until a corresponding ADR is present)
+- [ ] Return BLOCK from D-ADR-3 with the changed file name in the evidence field when no matching deployment ADR is found (Rule: deployment topology change in a diff blocks until a corresponding ADR is present)
+
+## Story 026 — Reconciliation Gate
+
+- [ ] Implement README claim extractor: parse README for feature claim phrases using a signal word list (Rule: README claims are consistent with actual repository artifacts)
+- [ ] Implement artifact presence check for each extracted README claim against source file paths in the repository (Rule: README claims are consistent with actual repository artifacts)
+- [ ] Return RC-1 VIOLATION listing the claimed feature name when no matching source file is found (Rule: README claims are consistent with actual repository artifacts)
+- [ ] Expose reconciliation results via a check_reconciliation MCP tool (Rule: README claims are consistent with actual repository artifacts)
+- [ ] Implement checked-checkbox scanner for tasks.md: extract artifact paths from completed task text (Rule: task completion claims are consistent with artifact content)
+- [ ] Implement file presence check for each artifact path extracted from checked tasks (Rule: task completion claims are consistent with artifact content)
+- [ ] Return RC-2 VIOLATION listing the task text when no file at the referenced artifact path is present (Rule: task completion claims are consistent with artifact content)
+
+## Story 027 — Evidence Artifacts
+
+- [ ] Implement release artifact scanner: detect files present in the release/ directory (Rule: verification evidence must be present when a release artifact exists)
+- [ ] Implement verification evidence matcher: for each release artifact file find a corresponding file in the verification/ directory (Rule: verification evidence must be present when a release artifact exists)
+- [ ] Return EV-1 VIOLATION listing the release artifact name when no matching verification file is found (Rule: verification evidence must be present when a release artifact exists)
+- [ ] Expose evidence artifact results via a check_evidence MCP tool (Rule: verification evidence must be present when a release artifact exists)
+- [ ] Implement benchmark annotation scanner: detect benchmark annotations in source files (Rule: benchmark results must be present for performance-sensitive components)
+- [ ] Implement benchmark result matcher: for each annotated component find a corresponding file in the benchmarks/ directory (Rule: benchmark results must be present for performance-sensitive components)
+- [ ] Return EV-2 WARNING listing the component name when no benchmark result file is found (Rule: benchmark results must be present for performance-sensitive components)
+
+## Story 028 — Workflow Governance
+
+- [ ] Extend protocol output with machine-readable workflow policy: `must_call_next`, `should_call_metrics`, `must_report_state`, `blocked`, and `blocked_by` (Rule: the MCP returns machine-readable next-action guidance after workflow-relevant tool calls)
+- [ ] Add a workflow block to gate, diff, metrics, reconciliation, and evidence responses (Rule: the MCP returns machine-readable next-action guidance after workflow-relevant tool calls)
+- [ ] Implement policy logic for metrics timing based on workflow phase (Rule: the MCP indicates when metrics should be run)
+- [ ] Implement changed-file evaluation for metrics timing decisions (Rule: the MCP indicates when metrics should be run)
+- [ ] Add `get_next_action` tool to compute next required checks for an agent (Rule: the MCP indicates when metrics should be run)
+- [ ] Add `get_next_action` tool output for blocking prerequisites (Rule: the MCP indicates when metrics should be run)
+- [ ] Add `get_next_action` tool output for metric obligations (Rule: the MCP indicates when metrics should be run)
+- [ ] Ensure workflow logic requests explicit state reports rather than inferring hidden model state (Rule: the MCP can request explicit agent state instead of assuming hidden model state)
+
+## Story 029 — Agent Identity and Session Tracking
+
+- [ ] Extend common tool input schema with `agent_id`, `agent_kind`, `parent_agent_id`, `session_id`, and `run_id` (Rule: the MCP distinguishes agents of the same or different kinds)
+- [ ] Replace `LLMIdentity`-only attribution with a richer actor identity object in server metadata and persistence paths (Rule: agent and session identity are attached to persisted records)
+- [ ] Add `begin_session` tool: register an agent/session and return initial workflow obligations (Rule: the MCP exposes agent-session workflow tools)
+- [ ] Add `report_agent_state` tool: persist goal, phase, working set, changed paths, open violations, and summary (Rule: the MCP can request explicit agent state instead of assuming hidden model state)
+- [ ] Add `list_agent_state` tool: return latest known state for agents in a project or session (Rule: the MCP exposes agent-session workflow tools)
+- [ ] Add `close_session` tool: mark an agent complete and persist final state (Rule: the MCP exposes agent-session workflow tools)
+- [ ] Persist `agent_id`, `agent_kind`, `parent_agent_id`, `session_id`, and `run_id` on all workflow-relevant Parquet records (Rule: agent and session identity are attached to persisted records)
+
+## Story 030 — Agent-Aware Metrics and Attribution
+
+- [ ] Extend metrics schemas and queries to group by `agent_kind`, `agent_id`, and `session_id` in addition to `llm_model` (Rule: agent and session identity are attached to persisted records)
+- [ ] Add rollup views for planner vs implementer vs reviewer behavior and compliance outcomes (Rule: the MCP distinguishes agents of the same or different kinds)
+- [ ] Surface missing agent metadata explicitly in metrics outputs rather than silently dropping unattributed records (Rule: missing agent metadata remains visible)
+- [ ] Add agent-session state history record storage and retrieval using Parquet + DuckDB globs (Rule: the MCP exposes agent-session workflow tools)
+- [ ] Include agent-aware workflow notes in `get_protocol` so different agent kinds receive differentiated guidance (Rule: the MCP distinguishes agents of the same or different kinds)
+
 ## Assumptions
 
 - The task list remains intentionally implementation-oriented and may reference concrete modules or tools because it is an execution artifact rather than a gate-validated requirements artifact.

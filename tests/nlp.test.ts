@@ -20,6 +20,12 @@ describe("nlp", () => {
     expect(result.evidence.length).toBeGreaterThan(0);
   });
 
+  it("R-6 does not flag public protocol identifiers as implementation leakage", () => {
+    const result = detectImplementationLeak("When check_mutation_score is called Then `workflow.must_call_next` is returned by get_next_action.");
+    expect(result.matched).toBe(false);
+    expect(result.evidence).toEqual([]);
+  });
+
   it("R-24 does not flag hedged assumptions as certainty language", () => {
     const result = detectCertaintyLanguage("Assumed OAuth is used because authentication details were not specified.");
     expect(result.matched).toBe(false);

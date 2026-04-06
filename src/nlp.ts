@@ -96,12 +96,36 @@ const IMPL_PATTERNS: Array<[RegExp, string]> = [
   [/\bSELECT\s+\w+\s+FROM\b/i, "SQL statement"],
 ];
 
+const PUBLIC_PROTOCOL_IDENTIFIERS = new Set([
+  "agent_id",
+  "agent_kind",
+  "parent_agent_id",
+  "session_id",
+  "run_id",
+  "begin_session",
+  "check_mutation_score",
+  "close_session",
+  "get_next_action",
+  "list_agent_state",
+  "must_call_next",
+  "report_agent_state",
+  "should_call_metrics",
+  "must_report_state",
+  "blocked_by",
+]);
+
+function filterPublicProtocolIdentifiers(matches: string[]): string[] {
+  return matches.filter((match) => !PUBLIC_PROTOCOL_IDENTIFIERS.has(match));
+}
+
 export function detectImplementationLeak(text: string): NLPResult {
   const evidence: string[] = [];
   for (const [pattern, label] of IMPL_PATTERNS) {
     const matches = text.match(pattern);
     if (matches) {
-      evidence.push(`${label}: ${[...new Set(matches)].slice(0, 3).join(", ")}`);
+      const filtered = filterPublicProtocolIdentifiers([...new Set(matches)]);
+      if (filtered.length === 0) continue;
+      evidence.push(`${label}: ${filtered.slice(0, 3).join(", ")}`);
     }
   }
   const confidence = Math.min(evidence.length / 2, 1.0);

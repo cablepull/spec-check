@@ -4,8 +4,8 @@ import { join, resolve } from "path";
 import { spawnSync } from "child_process";
 import type { FailureReason, InstallFailure } from "./types.js";
 
-type PackageManager = "pipx" | "pip" | "npm" | "yarn" | "pnpm" | "go";
-type RuntimeName = "python" | "node" | "go";
+type PackageManager = "pipx" | "pip" | "npm" | "yarn" | "pnpm" | "go" | "cargo";
+type RuntimeName = "python" | "node" | "go" | "cargo" | "rustc";
 
 interface DependencySpec {
   name: string;
@@ -108,12 +108,30 @@ export const DEPENDENCY_REGISTRY: Record<string, DependencySpec> = {
     covers: ["mutation_score"],
     languages: ["go"],
   },
+  "wasm-pack": {
+    name: "wasm-pack",
+    check: "wasm-pack --version",
+    install: { cargo: "cargo install wasm-pack" },
+    requiresRuntime: "cargo",
+    covers: ["wasm_test"],
+    languages: ["rust"],
+  },
+  "cargo-mutants": {
+    name: "cargo-mutants",
+    check: "cargo mutants --version",
+    install: { cargo: "cargo install cargo-mutants" },
+    requiresRuntime: "cargo",
+    covers: ["mutation_score"],
+    languages: ["rust"],
+  },
 };
 
 const PACKAGE_MANAGER_PRIORITY: Record<RuntimeName, PackageManager[]> = {
   python: ["pipx", "pip", "npm", "yarn", "pnpm", "go"],
   node: ["npm", "yarn", "pnpm", "pipx", "pip", "go"],
   go: ["go", "pipx", "pip", "npm", "yarn", "pnpm"],
+  cargo: ["cargo", "npm", "yarn", "pnpm", "pipx", "pip", "go"],
+  rustc: ["cargo", "npm", "yarn", "pnpm", "pipx", "pip", "go"],
 };
 
 function runShell(command: string, cwd?: string, timeout = 30_000) {
@@ -150,6 +168,7 @@ export function detectPackageManagers(): Record<PackageManager, boolean> {
     yarn: probeBinary("yarn"),
     pnpm: probeBinary("pnpm"),
     go: probeBinary("go"),
+    cargo: probeBinary("cargo"),
   };
 }
 
@@ -158,6 +177,8 @@ export function detectRuntimes(): Record<RuntimeName, boolean> {
     python: probeBinary("python3") || probeBinary("python"),
     node: probeBinary("node"),
     go: probeBinary("go"),
+    cargo: probeBinary("cargo"),
+    rustc: probeBinary("rustc"),
   };
 }
 

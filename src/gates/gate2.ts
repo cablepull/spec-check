@@ -48,6 +48,13 @@ interface ParsedExample {
   isNegative: boolean;
 }
 
+function buildGateStatus(criteria: CriterionResult[]): GateResult["status"] {
+  if (criteria.some((c) => c.status === "BLOCK")) return "BLOCKED";
+  if (criteria.some((c) => c.status === "VIOLATION")) return "FAILING";
+  if (criteria.some((c) => c.status === "WARNING")) return "PASSING_WITH_WARNINGS";
+  return "PASS";
+}
+
 // Extract rule lines: "### Rule R-3: ..." or "- Rule R-3: ..."
 function extractRules(text: string): ParsedRule[] {
   const rules: ParsedRule[] = [];
@@ -112,6 +119,192 @@ function extractExamples(text: string): ParsedExample[] {
   return examples;
 }
 
+function assessHierarchy(text: string): CriterionResult {
+  const hasFeature = /^#{1,3}\s+Feature\s+F-\d+/im.test(text);
+  const hasRule = /Rule\s+R-\d+/i.test(text);
+  const hasExample =
+    /^\s*(?:#{1,6}\s+)?(Example|Scenario)\b/im.test(text) ||
+    /\b(Given|When|Then)\b/i.test(text);
+
+  if (!hasFeature || !hasRule || !hasExample) {
+    return {
+      id: "R-2",
+      status: "VIOLATION",
+      detail: `Requirements hierarchy incomplete. Feature: ${hasFeature}, Rule: ${hasRule}, Example: ${hasExample}`,
+      fix: "Ensure requirements use ## Feature F-N / Rule R-N / #### Example structure with Given/When/Then.",
+    };
+  }
+  return { id: "R-2", status: "PASS", detail: "Feature/Rule/Example hierarchy detected." };
+}
+
+function assessImperativeRules(rules: ParsedRule[], threshold: number): CriterionResult {
+  if (rules.length === 0) {
+    return { id: "R-3", status: "WARNING", detail: "No parseable rules found to check for imperative verbs." };
+  }
+  const nonImperative = rules
+    .filter((rule) => {
+      const result = detectImperativeVerb(rule.text);
+      return !(result.matched && result.confidence >= threshold);
+    })
+    .map((rule) => `${rule.id}: "${rule.text.slice(0, 60)}"`);
+  if (nonImperative.length > 0) {
+    return {
+      id: "R-3",
+      status: "VIOLATION",
+      detail: `${nonImperative.length} rule(s) do not begin with an imperative verb.`,
+      evidence: nonImperative.slice(0, 5),
+      fix: "Rules must start with: accept, reject, show, send, create, validate, fetch, etc.",
+    };
+  }
+  return { id: "R-3", status: "PASS", detail: `All ${rules.length} rules start with imperative verbs.` };
+}
+
+function assessBddStructure(text: string): CriterionResult {
+  const hasGiven = /\bGiven\b/i.test(text);
+  const hasWhen = /\bWhen\b/i.test(text);
+  const hasThen = /\bThen\b/i.test(text);
+  if (!hasGiven || !hasWhen || !hasThen) {
+    return {
+      id: "R-4",
+      status: "VIOLATION",
+      detail: `Examples missing BDD structure. Given: ${hasGiven}, When: ${hasWhen}, Then: ${hasThen}`,
+      fix: "Format examples using Given/When/Then steps.",
+    };
+  }
+  return { id: "R-4", status: "PASS", detail: "Given/When/Then structure detected." };
+}
+
+function assessNegativeCoverage(examples: ParsedExample[], threshold: number): CriterionResult {
+  const negativeExamples = examples.filter((e) => e.isNegative);
+  if (examples.length > 0 && negativeExamples.length === 0) {
+    const allStepText = examples.flatMap((e) => e.steps).map((s) => s.text).join(" ");
+    const errorResult = detectErrorScenario(allStepText);
+    if (!errorResult.matched || errorResult.confidence < threshold) {
+      return {
+        id: "R-5",
+        status: "VIOLATION",
+        detail: "No negative/error scenarios found in examples.",
+        fix: "Add at least one negative example per feature covering invalid input, error, or rejection cases.",
+      };
+    }
+    return { id: "R-5", status: "PASS", detail: "Error/negative language detected in examples.", evidence: errorResult.evidence };
+  }
+  if (negativeExamples.length > 0) {
+    return { id: "R-5", status: "PASS", detail: `${negativeExamples.length} negative scenario(s) found.` };
+  }
+  return { id: "R-5", status: "WARNING", detail: "No parseable examples found; could not verify negative scenario coverage." };
+}
+
+function assessFeatureNegativeCoverage(examples: ParsedExample[]): CriterionResult {
+  const featureIds = [...new Set(examples.map((e) => e.featureId).filter((id) => id !== "unknown"))];
+  const featuresWithoutNeg = featureIds.filter((fid) => !examples.some((e) => e.featureId === fid && e.isNegative));
+  if (featureIds.length > 0 && featuresWithoutNeg.length > 0) {
+    return {
+      id: "R-6",
+      status: "VIOLATION",
+      detail: `${featuresWithoutNeg.length} feature(s) have no negative example.`,
+      evidence: featuresWithoutNeg,
+      fix: "Add at least one negative/error example to each feature.",
+    };
+  }
+  if (featureIds.length > 0) {
+    return { id: "R-6", status: "PASS", detail: "All features have at least one negative example." };
+  }
+  return { id: "R-6", status: "WARNING", detail: "Could not parse feature IDs from examples." };
+}
+
+function assessGivenSteps(allSteps: ParsedStep[], threshold: number): CriterionResult {
+  const givenSteps = allSteps.filter((s) => s.type === "GIVEN");
+  const badGivens = givenSteps
+    .map((step) => {
+      const normalized = step.text.replace(/`[^`]+`/g, "").replace(/"[^"]+"/g, "");
+      const result = detectActionVerbInGiven(normalized);
+      return result.matched && result.confidence >= threshold
+        ? `"${step.text.slice(0, 60)}" (${result.evidence.join(", ")})`
+        : null;
+    })
+    .filter((value): value is string => value !== null);
+  if (badGivens.length > 0) {
+    return {
+      id: "R-7",
+      status: "VIOLATION",
+      detail: `${badGivens.length} GIVEN step(s) contain action verbs (GIVEN describes state, not action).`,
+      evidence: badGivens.slice(0, 5),
+      fix: "Replace action verbs in GIVEN with state descriptions: 'the user is logged in' not 'the user clicks login'.",
+    };
+  }
+  if (givenSteps.length === 0) return { id: "R-7", status: "WARNING", detail: "No GIVEN steps found to check." };
+  return { id: "R-7", status: "PASS", detail: `All ${givenSteps.length} GIVEN step(s) are state descriptions.` };
+}
+
+function assessCompoundRules(rules: ParsedRule[], threshold: number): CriterionResult {
+  const compoundRules = rules
+    .map((rule) => {
+      const result = detectCompoundClause(rule.text);
+      return result.matched && result.confidence >= threshold
+        ? `${rule.id}: "${rule.text.slice(0, 60)}" — ${result.evidence[0]}`
+        : null;
+    })
+    .filter((value): value is string => value !== null);
+  if (compoundRules.length > 0) {
+    return {
+      id: "R-8",
+      status: "VIOLATION",
+      detail: `${compoundRules.length} rule(s) contain compound clauses joined by 'and'.`,
+      evidence: compoundRules.slice(0, 5),
+      fix: "Split compound rules: one rule = one behaviour.",
+    };
+  }
+  return { id: "R-8", status: "PASS", detail: "No compound rule clauses detected." };
+}
+
+function assessThenSteps(allSteps: ParsedStep[], threshold: number): CriterionResult {
+  const thenSteps = allSteps.filter((s) => s.type === "THEN");
+  const badThens = thenSteps
+    .map((step) => {
+      const result = detectInternalState(step.text);
+      return result.matched && result.confidence >= threshold
+        ? `"${step.text.slice(0, 60)}" (${result.evidence.join(", ")})`
+        : null;
+    })
+    .filter((value): value is string => value !== null);
+  if (badThens.length > 0) {
+    return {
+      id: "R-9",
+      status: "VIOLATION",
+      detail: `${badThens.length} THEN step(s) reference internal state (should reference observable output only).`,
+      evidence: badThens.slice(0, 5),
+      fix: "THEN should describe user-observable outcomes, not internal system state.",
+    };
+  }
+  if (thenSteps.length === 0) return { id: "R-9", status: "WARNING", detail: "No THEN steps found to check." };
+  return { id: "R-9", status: "PASS", detail: `All ${thenSteps.length} THEN step(s) are observable.` };
+}
+
+function assessImplementationLeakCriterion(text: string, threshold: number): CriterionResult {
+  const implLeak = detectImplementationLeak(text);
+  if (implLeak.matched && implLeak.confidence >= threshold) {
+    return {
+      id: "R-10",
+      status: "VIOLATION",
+      detail: "Requirements contain implementation-specific language.",
+      evidence: implLeak.evidence,
+      confidence: implLeak.confidence,
+      fix: "Remove framework/library names, SQL, identifiers. Requirements describe WHAT, not HOW.",
+    };
+  }
+  if (implLeak.matched) {
+    return {
+      id: "R-10",
+      status: "WARNING",
+      detail: "Possible implementation detail (below violation threshold).",
+      evidence: implLeak.evidence,
+      confidence: implLeak.confidence,
+    };
+  }
+  return { id: "R-10", status: "PASS", detail: "No implementation leak in requirements." };
+}
+
 export async function runGate2(specPath: string, config: ResolvedConfig): Promise<GateResult> {
   const start = Date.now();
   const criteria: CriterionResult[] = [];
@@ -137,218 +330,18 @@ export async function runGate2(specPath: string, config: ResolvedConfig): Promis
   criteria.push({ id: "R-1", status: "PASS", detail: `Requirements document found: ${reqFile}` });
 
   const text = readFile(reqFile);
-
-  // ── R-2: Feature/Rule/Example hierarchy ─────────────────────────────────────
-  const hasFeature = /^#{1,3}\s+Feature\s+F-\d+/im.test(text);
-  const hasRule = /Rule\s+R-\d+/i.test(text);
-  const hasExample =
-    /^\s*(?:#{1,6}\s+)?(Example|Scenario)\b/im.test(text) ||
-    /\b(Given|When|Then)\b/i.test(text);
-
-  if (!hasFeature || !hasRule || !hasExample) {
-    criteria.push({
-      id: "R-2",
-      status: "VIOLATION",
-      detail: `Requirements hierarchy incomplete. Feature: ${hasFeature}, Rule: ${hasRule}, Example: ${hasExample}`,
-      fix: "Ensure requirements use ## Feature F-N / Rule R-N / #### Example structure with Given/When/Then.",
-    });
-  } else {
-    criteria.push({ id: "R-2", status: "PASS", detail: "Feature/Rule/Example hierarchy detected." });
-  }
-
-  // ── R-3: Rules start with imperative verb ────────────────────────────────────
   const rules = extractRules(text);
-  const r3Threshold = getThreshold(config, "R-3");
-  const nonImperative: string[] = [];
-  let r3Pass = 0;
-
-  for (const rule of rules) {
-    const result = detectImperativeVerb(rule.text);
-    if (result.matched && result.confidence >= r3Threshold) {
-      r3Pass++;
-    } else {
-      nonImperative.push(`${rule.id}: "${rule.text.slice(0, 60)}"`);
-    }
-  }
-
-  if (rules.length === 0) {
-    criteria.push({ id: "R-3", status: "WARNING", detail: "No parseable rules found to check for imperative verbs." });
-  } else if (nonImperative.length > 0) {
-    criteria.push({
-      id: "R-3",
-      status: "VIOLATION",
-      detail: `${nonImperative.length} rule(s) do not begin with an imperative verb.`,
-      evidence: nonImperative.slice(0, 5),
-      fix: "Rules must start with: accept, reject, show, send, create, validate, fetch, etc.",
-    });
-  } else {
-    criteria.push({ id: "R-3", status: "PASS", detail: `All ${rules.length} rules start with imperative verbs.` });
-  }
-
-  // ── R-4: Examples use Given/When/Then ────────────────────────────────────────
-  const hasGiven = /\bGiven\b/i.test(text);
-  const hasWhen = /\bWhen\b/i.test(text);
-  const hasThen = /\bThen\b/i.test(text);
-  if (!hasGiven || !hasWhen || !hasThen) {
-    criteria.push({
-      id: "R-4",
-      status: "VIOLATION",
-      detail: `Examples missing BDD structure. Given: ${hasGiven}, When: ${hasWhen}, Then: ${hasThen}`,
-      fix: "Format examples using Given/When/Then steps.",
-    });
-  } else {
-    criteria.push({ id: "R-4", status: "PASS", detail: "Given/When/Then structure detected." });
-  }
-
-  // ── R-5: Negative scenario coverage ─────────────────────────────────────────
   const examples = extractExamples(text);
-  const r5Threshold = getThreshold(config, "R-5");
-  const negativeExamples = examples.filter((e) => e.isNegative);
-
-  if (examples.length > 0 && negativeExamples.length === 0) {
-    // Check if error language appears in any step text
-    const allStepText = examples.flatMap((e) => e.steps).map((s) => s.text).join(" ");
-    const errorResult = detectErrorScenario(allStepText);
-    if (!errorResult.matched || errorResult.confidence < r5Threshold) {
-      criteria.push({
-        id: "R-5",
-        status: "VIOLATION",
-        detail: "No negative/error scenarios found in examples.",
-        fix: "Add at least one negative example per feature covering invalid input, error, or rejection cases.",
-      });
-    } else {
-      criteria.push({ id: "R-5", status: "PASS", detail: "Error/negative language detected in examples.", evidence: errorResult.evidence });
-    }
-  } else if (negativeExamples.length > 0) {
-    criteria.push({ id: "R-5", status: "PASS", detail: `${negativeExamples.length} negative scenario(s) found.` });
-  } else {
-    criteria.push({ id: "R-5", status: "WARNING", detail: "No parseable examples found; could not verify negative scenario coverage." });
-  }
-
-  // ── R-6: Each feature has at least one negative example ─────────────────────
-  const featureIds = [...new Set(examples.map((e) => e.featureId).filter((id) => id !== "unknown"))];
-  const featuresWithoutNeg = featureIds.filter(
-    (fid) => !examples.some((e) => e.featureId === fid && e.isNegative)
-  );
-  if (featureIds.length > 0 && featuresWithoutNeg.length > 0) {
-    criteria.push({
-      id: "R-6",
-      status: "VIOLATION",
-      detail: `${featuresWithoutNeg.length} feature(s) have no negative example.`,
-      evidence: featuresWithoutNeg,
-      fix: "Add at least one negative/error example to each feature.",
-    });
-  } else if (featureIds.length > 0) {
-    criteria.push({ id: "R-6", status: "PASS", detail: "All features have at least one negative example." });
-  } else {
-    criteria.push({ id: "R-6", status: "WARNING", detail: "Could not parse feature IDs from examples." });
-  }
-
-  // ── R-7: GIVEN has no action verbs ───────────────────────────────────────────
   const allSteps = examples.flatMap((e) => e.steps);
-  const givenSteps = allSteps.filter((s) => s.type === "GIVEN");
-  const r7Threshold = getThreshold(config, "R-7");
-  const badGivens: string[] = [];
-  for (const step of givenSteps) {
-    const normalized = step.text.replace(/`[^`]+`/g, "").replace(/"[^"]+"/g, "");
-    const result = detectActionVerbInGiven(normalized);
-    if (result.matched && result.confidence >= r7Threshold) {
-      badGivens.push(`"${step.text.slice(0, 60)}" (${result.evidence.join(", ")})`);
-    }
-  }
-  if (badGivens.length > 0) {
-    criteria.push({
-      id: "R-7",
-      status: "VIOLATION",
-      detail: `${badGivens.length} GIVEN step(s) contain action verbs (GIVEN describes state, not action).`,
-      evidence: badGivens.slice(0, 5),
-      fix: "Replace action verbs in GIVEN with state descriptions: 'the user is logged in' not 'the user clicks login'.",
-    });
-  } else if (givenSteps.length === 0) {
-    criteria.push({ id: "R-7", status: "WARNING", detail: "No GIVEN steps found to check." });
-  } else {
-    criteria.push({ id: "R-7", status: "PASS", detail: `All ${givenSteps.length} GIVEN step(s) are state descriptions.` });
-  }
+  criteria.push(assessHierarchy(text));
+  criteria.push(assessImperativeRules(rules, getThreshold(config, "R-3")));
+  criteria.push(assessBddStructure(text));
+  criteria.push(assessNegativeCoverage(examples, getThreshold(config, "R-5")));
+  criteria.push(assessFeatureNegativeCoverage(examples));
+  criteria.push(assessGivenSteps(allSteps, getThreshold(config, "R-7")));
+  criteria.push(assessCompoundRules(rules, getThreshold(config, "R-8")));
+  criteria.push(assessThenSteps(allSteps, getThreshold(config, "R-9")));
+  criteria.push(assessImplementationLeakCriterion(text, getThreshold(config, "R-10")));
 
-  // ── R-8: No compound clauses in rules ────────────────────────────────────────
-  const r8Threshold = getThreshold(config, "R-8");
-  const compoundRules: string[] = [];
-  for (const rule of rules) {
-    const result = detectCompoundClause(rule.text);
-    if (result.matched && result.confidence >= r8Threshold) {
-      compoundRules.push(`${rule.id}: "${rule.text.slice(0, 60)}" — ${result.evidence[0]}`);
-    }
-  }
-  if (compoundRules.length > 0) {
-    criteria.push({
-      id: "R-8",
-      status: "VIOLATION",
-      detail: `${compoundRules.length} rule(s) contain compound clauses joined by 'and'.`,
-      evidence: compoundRules.slice(0, 5),
-      fix: "Split compound rules: one rule = one behaviour.",
-    });
-  } else {
-    criteria.push({ id: "R-8", status: "PASS", detail: "No compound rule clauses detected." });
-  }
-
-  // ── R-9: THEN has no internal state ──────────────────────────────────────────
-  const thenSteps = allSteps.filter((s) => s.type === "THEN");
-  const r9Threshold = getThreshold(config, "R-9");
-  const badThens: string[] = [];
-  for (const step of thenSteps) {
-    const result = detectInternalState(step.text);
-    if (result.matched && result.confidence >= r9Threshold) {
-      badThens.push(`"${step.text.slice(0, 60)}" (${result.evidence.join(", ")})`);
-    }
-  }
-  if (badThens.length > 0) {
-    criteria.push({
-      id: "R-9",
-      status: "VIOLATION",
-      detail: `${badThens.length} THEN step(s) reference internal state (should reference observable output only).`,
-      evidence: badThens.slice(0, 5),
-      fix: "THEN should describe user-observable outcomes, not internal system state.",
-    });
-  } else if (thenSteps.length === 0) {
-    criteria.push({ id: "R-9", status: "WARNING", detail: "No THEN steps found to check." });
-  } else {
-    criteria.push({ id: "R-9", status: "PASS", detail: `All ${thenSteps.length} THEN step(s) are observable.` });
-  }
-
-  // ── R-10: No implementation leak in requirements ──────────────────────────────
-  const r10Threshold = getThreshold(config, "R-10");
-  const implLeak = detectImplementationLeak(text);
-  if (implLeak.matched && implLeak.confidence >= r10Threshold) {
-    criteria.push({
-      id: "R-10",
-      status: "VIOLATION",
-      detail: "Requirements contain implementation-specific language.",
-      evidence: implLeak.evidence,
-      confidence: implLeak.confidence,
-      fix: "Remove framework/library names, SQL, identifiers. Requirements describe WHAT, not HOW.",
-    });
-  } else if (implLeak.matched) {
-    criteria.push({
-      id: "R-10",
-      status: "WARNING",
-      detail: "Possible implementation detail (below violation threshold).",
-      evidence: implLeak.evidence,
-      confidence: implLeak.confidence,
-    });
-  } else {
-    criteria.push({ id: "R-10", status: "PASS", detail: "No implementation leak in requirements." });
-  }
-
-  // ── Determine gate status ───────────────────────────────────────────────────
-  const hasBlock = criteria.some((c) => c.status === "BLOCK");
-  const hasViolation = criteria.some((c) => c.status === "VIOLATION");
-  const hasWarning = criteria.some((c) => c.status === "WARNING");
-
-  let status: GateResult["status"];
-  if (hasBlock) status = "BLOCKED";
-  else if (hasViolation) status = "FAILING";
-  else if (hasWarning) status = "PASSING_WITH_WARNINGS";
-  else status = "PASS";
-
-  return { gate: "G2", name: "Requirements Valid", status, criteria, durationMs: Date.now() - start };
+  return { gate: "G2", name: "Requirements Valid", status: buildGateStatus(criteria), criteria, durationMs: Date.now() - start };
 }

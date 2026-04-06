@@ -1,14 +1,13 @@
 // Story 017/018/019 — Metrics tests
 // Covers: getProjectMetrics, getRollupMetrics, formatProjectMetrics
-// Approach: write fixture JSONL files into a temp storage dir so metrics
-//           can be read back without requiring a real git commit or DuckDB.
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { getProjectMetrics, getRollupMetrics, formatProjectMetrics } from "../src/metrics.js";
 import { loadConfig } from "../src/config.js";
-import type { ServiceInfo } from "../src/types.js";
+import { buildFilePath, buildStoragePaths, writeRecord } from "../src/storage.js";
+import type { LLMIdentity, ServiceInfo } from "../src/types.js";
 
 const roots: string[] = [];
 
@@ -25,25 +24,30 @@ afterEach(() => {
   }
 });
 
-// Helpers to write fixture JSONL records into the expected storage path
-// Storage layout: {db_path}/{org}/{repo}/{service}/{YYYY}/{MM}/{DD}/
-function writeFixture(
-  dbPath: string,
-  org: string,
-  repo: string,
-  service: string,
-  date: string,
-  filename: string,
-  record: Record<string, unknown>
-): void {
-  const [yyyy, mm, dd] = date.split("-") as [string, string, string];
-  const dir = join(dbPath, org, repo, service, yyyy, mm, dd);
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, filename), JSON.stringify(record) + "\n", "utf-8");
+function makeService(rootPath: string, name = "root"): ServiceInfo {
+  return { name, rootPath, servicePath: rootPath, specPath: rootPath };
 }
 
-function makeService(rootPath: string, name = "root"): ServiceInfo {
-  return { name, rootPath, specPath: rootPath };
+const fakeLlm: LLMIdentity = {
+  id: "claude-sonnet-4-5",
+  provider: "anthropic",
+  model: "claude-sonnet-4-5",
+  source: "argument",
+};
+
+const fakeActor = {
+  agent_id: "agent-primary",
+  agent_kind: "primary",
+  parent_agent_id: null,
+  session_id: "session-1",
+  run_id: "run-1",
+};
+
+function persistRecord(rootPath: string, dbPath: string, checkType: string, timestamp: string, record: Record<string, unknown>): void {
+  const service = makeService(rootPath);
+  const paths = buildStoragePaths(rootPath, service, dbPath);
+  const filePath = buildFilePath(paths, fakeLlm, checkType, new Date(timestamp));
+  writeRecord(filePath, record);
 }
 
 // ── getProjectMetrics — no data ───────────────────────────────────────────────
@@ -75,35 +79,21 @@ describe("getProjectMetrics — gate pass rates", () => {
     const dir = makeTmp("spec-check-metrics-");
     const dbPath = join(dir, "db");
 
-    // We must discover org/repo by mocking the storage root.
-    // The simplest way: write files at the path getProjectMetrics will search.
-    // buildStoragePaths calls git to get org/repo; in a tmp dir with no git
-    // it will fall back to "local" / dirname.  We'll replicate that path here
-    // by running the actual buildStoragePaths first.
-    const { buildStoragePaths } = await import("../src/storage.js");
     const service = makeService(dir);
-    const paths = buildStoragePaths(dir, service, dbPath);
-    const storageDir = join(paths.storageRoot, paths.org, paths.repo, paths.service, "2025", "06", "15");
-    mkdirSync(storageDir, { recursive: true });
 
     const gates = ["G1", "G2", "G3", "G4", "G5"] as const;
     for (const gate of gates) {
-      writeFileSync(
-        join(storageDir, `abc12345_main_claude-sonnet-4-5_gate-${gate}_083045000.jsonl`),
-        JSON.stringify({
-          schema_version: 1,
-          timestamp: "2025-06-15T08:30:45.000Z",
-          gate,
-          gate_status: "PASS",
-          results: "[]",
-          org: paths.org,
-          repo: paths.repo,
-          service: paths.service,
-          llm_model: "claude-sonnet-4-5",
-          llm_id: "claude-sonnet-4-5",
-        }) + "\n",
-        "utf-8"
-      );
+      persistRecord(dir, dbPath, `gate-${gate}`, "2025-06-15T08:30:45.000Z", {
+        schema_version: 2,
+        check_type: "gate",
+        project_path: dir,
+        timestamp: "2025-06-15T08:30:45.000Z",
+        gate,
+        status: "PASS",
+        gate_status: "PASS",
+        criteria: [],
+        results: [],
+      });
     }
 
     writeFileSync(
@@ -123,28 +113,18 @@ describe("getProjectMetrics — gate pass rates", () => {
     const dir = makeTmp("spec-check-metrics-");
     const dbPath = join(dir, "db");
 
-    const { buildStoragePaths } = await import("../src/storage.js");
     const service = makeService(dir);
-    const paths = buildStoragePaths(dir, service, dbPath);
-    const storageDir = join(paths.storageRoot, paths.org, paths.repo, paths.service, "2025", "06", "16");
-    mkdirSync(storageDir, { recursive: true });
-
-    writeFileSync(
-      join(storageDir, `abc12345_main_claude-sonnet-4-5_gate-G1_083045000.jsonl`),
-      JSON.stringify({
-        schema_version: 1,
-        timestamp: "2025-06-16T08:30:45.000Z",
-        gate: "G1",
-        gate_status: "FAILING",
-        results: JSON.stringify([{ id: "I-1", status: "VIOLATION" }]),
-        org: paths.org,
-        repo: paths.repo,
-        service: paths.service,
-        llm_model: "claude-sonnet-4-5",
-        llm_id: "claude-sonnet-4-5",
-      }) + "\n",
-      "utf-8"
-    );
+    persistRecord(dir, dbPath, "gate-G1", "2025-06-16T08:30:45.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: dir,
+      timestamp: "2025-06-16T08:30:45.000Z",
+      gate: "G1",
+      status: "FAILING",
+      gate_status: "FAILING",
+      criteria: [{ id: "I-1", status: "VIOLATION" }],
+      results: [{ id: "I-1", status: "VIOLATION" }],
+    });
 
     writeFileSync(
       join(dir, "spec-check.config.json"),
@@ -175,29 +155,20 @@ describe("getProjectMetrics — compliance score", () => {
     const dir = makeTmp("spec-check-metrics-");
     const dbPath = join(dir, "db");
 
-    const { buildStoragePaths } = await import("../src/storage.js");
     const service = makeService(dir);
-    const paths = buildStoragePaths(dir, service, dbPath);
-    const storageDir = join(paths.storageRoot, paths.org, paths.repo, paths.service, "2025", "07", "01");
-    mkdirSync(storageDir, { recursive: true });
 
     for (const gate of ["G1", "G2", "G3", "G4", "G5"]) {
-      writeFileSync(
-        join(storageDir, `abc12345_main_claude-sonnet-4-5_gate-${gate}_120000000.jsonl`),
-        JSON.stringify({
-          schema_version: 1,
-          timestamp: "2025-07-01T12:00:00.000Z",
-          gate,
-          gate_status: "PASS",
-          results: "[]",
-          org: paths.org,
-          repo: paths.repo,
-          service: paths.service,
-          llm_model: "claude-sonnet-4-5",
-          llm_id: "claude-sonnet-4-5",
-        }) + "\n",
-        "utf-8"
-      );
+      persistRecord(dir, dbPath, `gate-${gate}`, "2025-07-01T12:00:00.000Z", {
+        schema_version: 2,
+        check_type: "gate",
+        project_path: dir,
+        timestamp: "2025-07-01T12:00:00.000Z",
+        gate,
+        status: "PASS",
+        gate_status: "PASS",
+        criteria: [],
+        results: [],
+      });
     }
 
     writeFileSync(
@@ -213,6 +184,111 @@ describe("getProjectMetrics — compliance score", () => {
   });
 });
 
+describe("agent-aware metrics", () => {
+  it("includes project agent activity from gate and agent-state records", async () => {
+    const dir = makeTmp("spec-check-metrics-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    persistRecord(dir, dbPath, "gate-G1", "2025-07-02T12:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: dir,
+      timestamp: "2025-07-02T12:00:00.000Z",
+      gate: "G1",
+      status: "PASS",
+      gate_status: "PASS",
+      criteria: [],
+      results: [],
+      ...fakeActor,
+    });
+    persistRecord(dir, dbPath, "agent-state", "2025-07-02T12:05:00.000Z", {
+      schema_version: 1,
+      check_type: "agent-state",
+      project_path: dir,
+      timestamp: "2025-07-02T12:05:00.000Z",
+      current_phase: "review",
+      open_violations: ["R-12"],
+      metrics_due: true,
+      status: "active",
+      ...fakeActor,
+    });
+
+    writeFileSync(
+      join(dir, "spec-check.config.json"),
+      JSON.stringify({ metrics: { db_path: dbPath } }),
+      "utf-8"
+    );
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    expect(result.agent_activity).toHaveLength(1);
+    expect(result.agent_activity[0]?.agent_id).toBe("agent-primary");
+    expect(result.agent_activity[0]?.agent_kind).toBe("primary");
+    expect(result.agent_activity[0]?.gate_pass_rate).toBe(100);
+    expect(result.agent_activity[0]?.metrics_due).toBe(true);
+    expect(result.agent_activity[0]?.open_violations).toBe(1);
+  });
+
+  it("includes rollup agent rankings and kind rankings", async () => {
+    const dir = makeTmp("spec-check-metrics-");
+    const dbPath = join(dir, "db");
+
+    persistRecord(dir, dbPath, "gate-G1", "2025-07-03T12:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: dir,
+      timestamp: "2025-07-03T12:00:00.000Z",
+      gate: "G1",
+      status: "PASS",
+      gate_status: "PASS",
+      criteria: [],
+      results: [],
+      ...fakeActor,
+    });
+    persistRecord(dir, dbPath, "gate-G2", "2025-07-03T12:01:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: dir,
+      timestamp: "2025-07-03T12:01:00.000Z",
+      gate: "G2",
+      status: "FAILING",
+      gate_status: "FAILING",
+      criteria: [{ id: "R-1", status: "VIOLATION" }],
+      results: [{ id: "R-1", status: "VIOLATION" }],
+      agent_id: "agent-reviewer",
+      agent_kind: "reviewer",
+      parent_agent_id: null,
+      session_id: "session-1",
+      run_id: "run-2",
+    });
+    persistRecord(dir, dbPath, "agent-state", "2025-07-03T12:02:00.000Z", {
+      schema_version: 1,
+      check_type: "agent-state",
+      project_path: dir,
+      timestamp: "2025-07-03T12:02:00.000Z",
+      current_phase: "review",
+      metrics_due: false,
+      open_violations: [],
+      status: "completed",
+      ...fakeActor,
+    });
+
+    writeFileSync(
+      join(dir, "spec-check.config.json"),
+      JSON.stringify({ metrics: { db_path: dbPath } }),
+      "utf-8"
+    );
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+
+    expect(result.agent_gate_rankings.some((item) => item.agent_id === "agent-primary")).toBe(true);
+    expect(result.agent_gate_rankings.some((item) => item.agent_id === "agent-reviewer")).toBe(true);
+    expect(result.agent_kind_rankings.some((item) => item.agent_kind === "primary")).toBe(true);
+    expect(result.agent_kind_rankings.some((item) => item.agent_kind === "reviewer")).toBe(true);
+  });
+});
+
 // ── getProjectMetrics — since filter ─────────────────────────────────────────
 
 describe("getProjectMetrics — since filter", () => {
@@ -220,47 +296,30 @@ describe("getProjectMetrics — since filter", () => {
     const dir = makeTmp("spec-check-metrics-");
     const dbPath = join(dir, "db");
 
-    const { buildStoragePaths } = await import("../src/storage.js");
     const service = makeService(dir);
-    const paths = buildStoragePaths(dir, service, dbPath);
-    const storageDir = join(paths.storageRoot, paths.org, paths.repo, paths.service, "2025", "01", "01");
-    mkdirSync(storageDir, { recursive: true });
+    persistRecord(dir, dbPath, "gate-G2", "2025-01-01T01:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: dir,
+      timestamp: "2025-01-01T01:00:00.000Z",
+      gate: "G2",
+      status: "FAILING",
+      gate_status: "FAILING",
+      criteria: [],
+      results: [],
+    });
 
-    // Old record: FAILING
-    writeFileSync(
-      join(storageDir, `abc12345_main_claude-sonnet-4-5_gate-G2_010000000.jsonl`),
-      JSON.stringify({
-        schema_version: 1,
-        timestamp: "2025-01-01T01:00:00.000Z",
-        gate: "G2",
-        gate_status: "FAILING",
-        results: "[]",
-        org: paths.org,
-        repo: paths.repo,
-        service: paths.service,
-        llm_model: "claude-sonnet-4-5",
-        llm_id: "claude-sonnet-4-5",
-      }) + "\n",
-      "utf-8"
-    );
-
-    // New record (same day, later time): PASS
-    writeFileSync(
-      join(storageDir, `abc12345_main_claude-sonnet-4-5_gate-G2_020000000.jsonl`),
-      JSON.stringify({
-        schema_version: 1,
-        timestamp: "2025-01-01T02:00:00.000Z",
-        gate: "G2",
-        gate_status: "PASS",
-        results: "[]",
-        org: paths.org,
-        repo: paths.repo,
-        service: paths.service,
-        llm_model: "claude-sonnet-4-5",
-        llm_id: "claude-sonnet-4-5",
-      }) + "\n",
-      "utf-8"
-    );
+    persistRecord(dir, dbPath, "gate-G2", "2025-01-01T02:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: dir,
+      timestamp: "2025-01-01T02:00:00.000Z",
+      gate: "G2",
+      status: "PASS",
+      gate_status: "PASS",
+      criteria: [],
+      results: [],
+    });
 
     writeFileSync(
       join(dir, "spec-check.config.json"),
@@ -282,25 +341,15 @@ describe("getProjectMetrics — mutation", () => {
     const dir = makeTmp("spec-check-metrics-");
     const dbPath = join(dir, "db");
 
-    const { buildStoragePaths } = await import("../src/storage.js");
     const service = makeService(dir);
-    const paths = buildStoragePaths(dir, service, dbPath);
-    const storageDir = join(paths.storageRoot, paths.org, paths.repo, paths.service, "2025", "08", "01");
-    mkdirSync(storageDir, { recursive: true });
-
-    writeFileSync(
-      join(storageDir, `abc12345_main_claude-sonnet-4-5_mutation_120000000.jsonl`),
-      JSON.stringify({
-        schema_version: 1,
-        timestamp: "2025-08-01T12:00:00.000Z",
-        score: 78.5,
-        status: "PASS",
-        org: paths.org,
-        repo: paths.repo,
-        service: paths.service,
-      }) + "\n",
-      "utf-8"
-    );
+    persistRecord(dir, dbPath, "mutation", "2025-08-01T12:00:00.000Z", {
+      schema_version: 2,
+      check_type: "mutation",
+      project_path: dir,
+      timestamp: "2025-08-01T12:00:00.000Z",
+      score: 78.5,
+      status: "PASS",
+    });
 
     writeFileSync(
       join(dir, "spec-check.config.json"),
@@ -347,24 +396,32 @@ describe("getRollupMetrics — cross-project", () => {
     ];
 
     for (const p of projects) {
-      const storageDir = join(dbPath, p.org, p.repo, p.service, "2025", "09", "01");
-      mkdirSync(storageDir, { recursive: true });
-      writeFileSync(
-        join(storageDir, `abc12345_main_claude-sonnet-4-5_gate-G1_090000000.jsonl`),
-        JSON.stringify({
-          schema_version: 1,
-          timestamp: "2025-09-01T09:00:00.000Z",
-          gate: "G1",
-          gate_status: "PASS",
-          results: "[]",
-          org: p.org,
-          repo: p.repo,
-          service: p.service,
-          llm_model: "claude-sonnet-4-5",
-          llm_id: "claude-sonnet-4-5",
-        }) + "\n",
-        "utf-8"
+      const filePath = join(
+        dbPath,
+        p.org,
+        p.repo,
+        p.service,
+        "2025",
+        "09",
+        "01",
+        "abc12345_main_claude-sonnet-4-5_gate-G1_090000000.parquet"
       );
+      writeRecord(filePath, {
+        schema_version: 2,
+        check_type: "gate",
+        project_path: join(dir, p.repo),
+        timestamp: "2025-09-01T09:00:00.000Z",
+        org: p.org,
+        repo: p.repo,
+        service: p.service,
+        gate: "G1",
+        status: "PASS",
+        gate_status: "PASS",
+        criteria: [],
+        results: [],
+        llm_model: "claude-sonnet-4-5",
+        llm_id: "claude-sonnet-4-5",
+      });
     }
 
     writeFileSync(

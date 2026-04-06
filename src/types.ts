@@ -55,6 +55,48 @@ export interface LLMIdentity {
   source: "argument" | "env" | "config" | "fallback";
 }
 
+export type AgentKind =
+  | "primary"
+  | "planner"
+  | "implementer"
+  | "reviewer"
+  | "fixer"
+  | "human"
+  | "ci"
+  | "unknown";
+
+export interface ActorIdentity extends LLMIdentity {
+  agent_id: string;
+  agent_kind: AgentKind;
+  parent_agent_id: string | null;
+  session_id: string;
+  run_id: string;
+}
+
+export interface AgentState {
+  current_goal: string | null;
+  current_phase: string | null;
+  working_set_paths: string[];
+  changed_paths: string[];
+  last_completed_check: string | null;
+  required_next_checks: string[];
+  open_violations: string[];
+  assumptions_declared: boolean | null;
+  metrics_due: boolean | null;
+  summary_from_agent: string | null;
+  status: "active" | "completed";
+}
+
+export interface WorkflowGuidance {
+  phase: string;
+  must_call_next: string[];
+  should_call_metrics: boolean;
+  must_report_state: boolean;
+  blocked: boolean;
+  blocked_by: string[];
+  notes: string[];
+}
+
 // ─── Configuration ────────────────────────────────────────────────────────────
 
 export interface ThresholdConfig {
@@ -121,6 +163,10 @@ export interface MetricsConfig {
 
 export interface SpecCheckConfig {
   default_llm?: string;
+  /** Single command override — superseded by test_commands if both are set. */
+  test_command?: string;
+  /** Run each command in order; gate fails if any exits non-zero. */
+  test_commands?: string[];
   thresholds: ThresholdConfig;
   compliance_weights: ComplianceWeights;
   metrics: MetricsConfig;
@@ -156,6 +202,11 @@ export interface ToolArgs {
   path?: string;
   format?: Format;
   llm?: string;
+  agent_id?: string;
+  agent_kind?: AgentKind;
+  parent_agent_id?: string;
+  session_id?: string;
+  run_id?: string;
   since?: string;
   base?: string;
   threshold?: number;
@@ -166,6 +217,7 @@ export interface ToolArgs {
   assumption_id?: string;
   reason?: string;
   name?: string;
+  state?: Partial<AgentState>;
   include_archived?: boolean;
 }
 
@@ -205,6 +257,29 @@ export const DEFAULT_CONFIG: SpecCheckConfig = {
     },
   },
 };
+
+// ─── Quality signal metrics (reconciliation + evidence) ───────────────────────
+
+export interface ReconciliationMetrics {
+  rc1_pass_rate: number | null;  // % of runs where RC-1 (README claims) passes
+  rc2_pass_rate: number | null;  // % of runs where RC-2 (completed tasks) passes
+  latest_status: GateStatus | null;
+  run_count: number;
+}
+
+export interface EvidenceMetrics {
+  ev1_pass_rate: number | null;  // % of runs where EV-1 (release verification) passes
+  ev2_pass_rate: number | null;  // % of runs where EV-2 (benchmark coverage) passes
+  latest_status: GateStatus | null;
+  run_count: number;
+}
+
+export interface DiffAdrMetrics {
+  dadr1_pass_rate: number | null;  // % of diffs where new dependencies have an ADR
+  dadr2_pass_rate: number | null;  // % of diffs where security changes have an ADR
+  dadr3_pass_rate: number | null;  // % of diffs where deployment changes have an ADR
+  checked_diffs: number;
+}
 
 // ─── Structured error types ───────────────────────────────────────────────────
 

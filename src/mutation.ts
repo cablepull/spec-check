@@ -2,13 +2,14 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, w
 import { basename, extname, join, relative, resolve } from "path";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
-import type { CriterionResult, GateStatus, LLMIdentity, ResolvedConfig, ServiceInfo } from "./types.js";
+import type { ActorIdentity, CriterionResult, GateStatus, ResolvedConfig, ServiceInfo } from "./types.js";
 import { getThreshold } from "./config.js";
-import { buildFilePath, buildStoragePaths, writeRecord } from "./storage.js";
+import { buildFilePath, buildStoragePaths, globPattern, runDuckQuery, writeRecord } from "./storage.js";
 import { DEPENDENCY_REGISTRY } from "./dependencies.js";
+import { actorFields } from "./workflow.js";
 
-type MutationLanguage = "typescript" | "javascript" | "python" | "go" | "java";
-type MutationTool = "stryker" | "mutmut" | "go-mutesting" | "pitest";
+type MutationLanguage = "typescript" | "javascript" | "python" | "go" | "java" | "rust";
+type MutationTool = "stryker" | "mutmut" | "go-mutesting" | "pitest" | "cargo-mutants" | "lightweight";
 type MutationTrigger = "pre_merge" | "nightly" | "weekly" | "on_demand" | "pre_commit";
 
 export interface MutationFunctionResult {
@@ -60,6 +61,7 @@ const LANGUAGE_BY_EXT: Record<string, MutationLanguage> = {
   ".py": "python",
   ".go": "go",
   ".java": "java",
+  ".rs": "rust",
 };
 
 interface ScopeInfo {
@@ -86,6 +88,25 @@ interface RawMutationResult {
   raw_output?: string;
   exit_code?: number | null;
 }
+
+interface LightweightMutant {
+  file: string;
+  line: number;
+  name: string;
+  mutated: string;
+}
+
+const LIGHTWEIGHT_MUTATION_PATTERNS: Array<{ pattern: RegExp; replacement: string; label: string }> = [
+  { pattern: /===/, replacement: "!==", label: "strict-equality-flip" },
+  { pattern: /!==/, replacement: "===", label: "strict-inequality-flip" },
+  { pattern: /\btrue\b/, replacement: "false", label: "boolean-flip" },
+  { pattern: /\bfalse\b/, replacement: "true", label: "boolean-flip" },
+  { pattern: /&&/, replacement: "||", label: "logical-operator-flip" },
+  { pattern: /\|\|/, replacement: "&&", label: "logical-operator-flip" },
+  { pattern: /\+/, replacement: "-", label: "arithmetic-flip" },
+  { pattern: />=/, replacement: "<", label: "comparison-flip" },
+  { pattern: /<=/, replacement: ">", label: "comparison-flip" },
+];
 
 function runShell(command: string, cwd?: string, timeout = 300_000) {
   return spawnSync(command, {
@@ -136,6 +157,11 @@ function detectScope(targetPath: string, service: ServiceInfo): ScopeInfo {
 
 function readText(path: string): string {
   try { return readFileSync(path, "utf-8"); } catch { return ""; }
+}
+
+function looksLikeTestFile(path: string): boolean {
+  const normalized = path.replace(/\\/g, "/");
+  return /(^|\/)(__tests__|tests)\//.test(normalized) || /\.(test|spec)\.[^.]+$/.test(normalized);
 }
 
 function normaliseTokens(text: string): string[] {
@@ -233,64 +259,31 @@ function loadComplexityMap(service: ServiceInfo, config: ResolvedConfig): Map<st
   const storage = buildStoragePaths(service.rootPath, service, config.value.metrics.db_path);
   const baseDir = join(storage.storageRoot, storage.org, storage.repo, storage.service);
   const result = new Map<string, number>();
-
-  function scan(dir: string) {
-    let entries: string[] = [];
-    try { entries = readdirSync(dir); } catch { return; }
-    for (const entry of entries) {
-      const full = join(dir, entry);
-      let stat;
-      try { stat = statSync(full); } catch { continue; }
-      if (stat.isDirectory()) scan(full);
-      else if (/_complexity_/.test(entry) && entry.endsWith(".jsonl")) {
-        const lines = readText(full).split(/\r?\n/).filter(Boolean);
-        for (const line of lines) {
-          try {
-            const parsed = JSON.parse(line) as { files?: Array<{ functions?: Array<{ name?: string; cc?: number; file?: string }> }> };
-            for (const file of parsed.files ?? []) {
-              for (const fn of file.functions ?? []) {
-                if (!fn.name || typeof fn.cc !== "number") continue;
-                const key = `${fn.file ?? ""}::${fn.name}`;
-                result.set(key, fn.cc);
-              }
-            }
-          } catch {}
-        }
-      }
+  const rows = runDuckQuery(`
+    SELECT results
+    FROM read_parquet('${globPattern(baseDir).replace(/'/g, "''")}', union_by_name=true)
+    WHERE check_type = 'complexity'
+  `);
+  for (const row of rows) {
+    let parsed: Array<{ name?: string; cc?: number; file?: string }> = [];
+    try { parsed = JSON.parse(row.results ?? "[]") as Array<{ name?: string; cc?: number; file?: string }>; } catch {}
+    for (const fn of parsed) {
+      if (!fn.name || typeof fn.cc !== "number") continue;
+      const key = `${fn.file ?? ""}::${fn.name}`;
+      result.set(key, fn.cc);
     }
   }
-
-  scan(baseDir);
   return result;
 }
 
 function latestHistoricalScores(service: ServiceInfo, config: ResolvedConfig): number[] {
   const storage = buildStoragePaths(service.rootPath, service, config.value.metrics.db_path);
   const baseDir = join(storage.storageRoot, storage.org, storage.repo, storage.service);
-  const items: Array<{ timestamp: string; score: number }> = [];
-
-  function scan(dir: string) {
-    let entries: string[] = [];
-    try { entries = readdirSync(dir); } catch { return; }
-    for (const entry of entries) {
-      const full = join(dir, entry);
-      let stat;
-      try { stat = statSync(full); } catch { continue; }
-      if (stat.isDirectory()) scan(full);
-      else if (/_mutation_/.test(entry) && entry.endsWith(".jsonl")) {
-        for (const line of readText(full).split(/\r?\n/).filter(Boolean)) {
-          try {
-            const parsed = JSON.parse(line) as { timestamp?: string; score?: number | null };
-            if (typeof parsed.score === "number" && parsed.timestamp) {
-              items.push({ timestamp: parsed.timestamp, score: parsed.score });
-            }
-          } catch {}
-        }
-      }
-    }
-  }
-
-  scan(baseDir);
+  const items = runDuckQuery(`
+    SELECT timestamp, score
+    FROM read_parquet('${globPattern(baseDir).replace(/'/g, "''")}', union_by_name=true)
+    WHERE check_type = 'mutation' AND score IS NOT NULL
+  `) as Array<{ timestamp: string; score: number }>;
   return items.sort((a, b) => a.timestamp.localeCompare(b.timestamp)).map((item) => item.score).slice(-3);
 }
 
@@ -447,17 +440,75 @@ function parseGoMutesting(stdout: string, scopeRoot: string, notes: MutationNote
   };
 }
 
+function parseCargoMutants(output: string, notes: MutationNote[]): RawMutationResult {
+  // cargo-mutants summary line: "N mutants tested: X caught, Y missed, Z unviable, W timeout"
+  // or "ok N/M: caught X, missed Y, ..."
+  let total = 0, killed = 0, survived = 0, timeout = 0;
+
+  const summaryMatch = output.match(/(\d+)\s+mutants?\s+tested[^\n]*caught[:\s]+(\d+)[^\n]*missed[:\s]+(\d+)/i);
+  if (summaryMatch) {
+    killed = parseInt(summaryMatch[2]!, 10);
+    survived = parseInt(summaryMatch[3]!, 10);
+    const timeoutMatch = output.match(/timeout[:\s]+(\d+)/i);
+    timeout = timeoutMatch ? parseInt(timeoutMatch[1]!, 10) : 0;
+    total = killed + survived + timeout;
+  } else {
+    // Fallback: count per-mutant status lines
+    const lines = output.split(/\r?\n/);
+    total = lines.filter((l) => /^(ok|MISSED|TIMEOUT)\s/i.test(l)).length;
+    killed = lines.filter((l) => /^ok\s/i.test(l)).length;
+    survived = lines.filter((l) => /^MISSED\s/i.test(l)).length;
+    timeout = lines.filter((l) => /^TIMEOUT\s/i.test(l)).length;
+  }
+
+  const score = total > 0 ? (killed / total) * 100 : null;
+  if (total === 0) {
+    notes.push({ code: "MT_PARSE_WARN", detail: "cargo-mutants output did not include a recognized summary. Verify the cargo-mutants version." });
+  }
+
+  // Extract survived mutant descriptions for function-level reporting
+  const missedLines = output.split(/\r?\n/).filter((l) => /^MISSED\s/i.test(l));
+  const functions: MutationFunctionResult[] = missedLines.map((line) => {
+    const fileMatch = line.match(/([^/\s]+\.rs:\d+:\d+)/);
+    return {
+      name: fileMatch?.[1] ?? "unknown",
+      file: fileMatch?.[1]?.split(":")[0] ?? "unknown",
+      score: 0,
+      critical: false,
+      surviving_mutants: [line.trim()],
+      cc: null,
+    };
+  });
+
+  return {
+    tool: "cargo-mutants",
+    incremental: false,
+    total_mutants: total,
+    killed,
+    survived,
+    timeout,
+    score,
+    functions,
+    notes,
+    raw_output: output,
+  };
+}
+
 function executeTool(language: MutationLanguage, scope: ScopeInfo, config: ResolvedConfig): RawMutationResult | null {
   const notes: MutationNote[] = [];
-
-  if (language === "typescript" || language === "javascript") {
-    const localBinary = join(scope.root, "node_modules", ".bin", "stryker");
-    const binary = existsSync(localBinary) ? `"${localBinary}"` : (probeBinary("stryker", scope.root) ? "stryker" : "");
-    if (!binary) return null;
-    const testScript = readPackageTestScript(scope.root);
-    if (!testScript) {
+  switch (language) {
+    case "typescript":
+    case "javascript":
+      return executeStryker(scope, config, notes);
+    case "python":
+      return executeMutmut(scope, notes);
+    case "go":
+      return executeGoMutesting(scope, notes);
+    case "rust":
+      return executeCargoMutants(scope, notes);
+    default:
       return {
-        tool: "stryker",
+        tool: "pitest",
         incremental: false,
         total_mutants: 0,
         killed: 0,
@@ -465,60 +516,198 @@ function executeTool(language: MutationLanguage, scope: ScopeInfo, config: Resol
         timeout: 0,
         score: null,
         functions: [],
-        notes: [{ code: "TEST_COMMAND_MISSING", detail: "package.json does not define a test script, so Stryker has no test command to execute." }],
-        raw_output: "",
-        exit_code: null,
+        notes: [
+          { code: "UNSUPPORTED_LANGUAGE", detail: "Java mutation testing is deferred in v1; Pitest integration is not implemented yet." },
+        ],
       };
+  }
+}
+
+function noteTimeout(result: ReturnType<typeof runShell>, notes: MutationNote[], tool: string): void {
+  if (result.error && result.error.message.includes("timed out")) {
+    notes.push({ code: "MT_TIMEOUT", detail: `${tool} timed out before completion.` });
+  }
+}
+
+function executeStryker(scope: ScopeInfo, config: ResolvedConfig, notes: MutationNote[]): RawMutationResult | null {
+  const localBinary = join(scope.root, "node_modules", ".bin", "stryker");
+  const binary = existsSync(localBinary) ? `"${localBinary}"` : (probeBinary("stryker", scope.root) ? "stryker" : "");
+  if (!binary) return null;
+  const testScript = readPackageTestScript(scope.root);
+  if (!testScript) {
+    return {
+      tool: "stryker",
+      incremental: false,
+      total_mutants: 0,
+      killed: 0,
+      survived: 0,
+      timeout: 0,
+      score: null,
+      functions: [],
+      notes: [{ code: "TEST_COMMAND_MISSING", detail: "package.json does not define a test script, so Stryker has no test command to execute." }],
+      raw_output: "",
+      exit_code: null,
+    };
+  }
+  const cfg = makeMinimalStrykerConfig(scope.root, scope.files);
+  const parts = [`${binary} run`];
+  if (cfg) parts.push(`"${cfg.path}"`);
+  if (config.value.mutation.incremental) parts.push("--incremental");
+  const result = runShell(parts.join(" "), scope.root, 300_000);
+  if (cfg?.generated) {
+    try { rmSync(join(cfg.path, ".."), { recursive: true, force: true }); } catch {}
+  }
+  noteTimeout(result, notes, "Stryker");
+  const strykerOutput = [result.stdout, result.stderr, result.error?.message ?? ""].filter(Boolean).join("\n");
+  if (/listen EPERM|operation not permitted 0\.0\.0\.0/i.test(strykerOutput)) {
+    const fallback = runLightweightMutationFallback(scope, notes);
+    if (fallback) return fallback;
+  }
+  const parsed = parseStryker(scope.root, strykerOutput, notes);
+  parsed.exit_code = result.status;
+  return parsed;
+}
+
+function buildLightweightMutants(scope: ScopeInfo): LightweightMutant[] {
+  const candidates = scope.files
+    .filter((file) => ["typescript", "javascript"].includes(LANGUAGE_BY_EXT[extname(file).toLowerCase()] ?? ""))
+    .filter((file) => !looksLikeTestFile(file))
+    .slice(0, 20);
+  const mutants: LightweightMutant[] = [];
+  for (const file of candidates) {
+    const lines = readText(file).split(/\r?\n/);
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index] ?? "";
+      if (!line.trim() || line.trim().startsWith("//")) continue;
+      for (const candidate of LIGHTWEIGHT_MUTATION_PATTERNS) {
+        if (!candidate.pattern.test(line)) continue;
+        const mutatedLine = line.replace(candidate.pattern, candidate.replacement);
+        if (mutatedLine === line) continue;
+        const mutatedLines = [...lines];
+        mutatedLines[index] = mutatedLine;
+        mutants.push({
+          file,
+          line: index + 1,
+          name: `${candidate.label}@${basename(file)}:${index + 1}`,
+          mutated: mutatedLines.join("\n"),
+        });
+        break;
+      }
+      if (mutants.length >= 12) return mutants;
     }
-    const cfg = makeMinimalStrykerConfig(scope.root, scope.files);
-    const parts = [`${binary} run`];
-    if (cfg) parts.push(`"${cfg.path}"`);
-    if (config.value.mutation.incremental) parts.push("--incremental");
-    const result = runShell(parts.join(" "), scope.root, 300_000);
-    if (cfg?.generated) {
-      try { rmSync(join(cfg.path, ".."), { recursive: true, force: true }); } catch {}
-    }
-    if (result.error && result.error.message.includes("timed out")) {
-      notes.push({ code: "MT_TIMEOUT", detail: "Stryker timed out before completion." });
-    }
-    const parsed = parseStryker(scope.root, `${result.stdout}\n${result.stderr}`, notes);
-    parsed.exit_code = result.status;
-    return parsed;
+  }
+  return mutants;
+}
+
+function runLightweightMutationFallback(scope: ScopeInfo, notes: MutationNote[]): RawMutationResult | null {
+  const testScript = readPackageTestScript(scope.root);
+  if (!testScript) return null;
+  const mutants = buildLightweightMutants(scope);
+  if (mutants.length === 0) {
+    notes.push({ code: "MT_FALLBACK_EMPTY", detail: "Lightweight fallback could not find any eligible TypeScript/JavaScript mutations in the requested scope." });
+    return {
+      tool: "lightweight",
+      incremental: false,
+      total_mutants: 0,
+      killed: 0,
+      survived: 0,
+      timeout: 0,
+      score: null,
+      functions: [],
+      notes,
+      raw_output: "",
+      exit_code: null,
+    };
   }
 
-  if (language === "python") {
-    if (!probeBinary("mutmut", scope.root)) return null;
-    const target = scope.files.length === 1 ? relative(scope.root, scope.files[0]!) : ".";
-    const result = runShell(`mutmut run ${target}`, scope.root, 300_000);
+  const functions: MutationFunctionResult[] = [];
+  let killed = 0;
+  let survived = 0;
+  let timeout = 0;
+  for (const mutant of mutants) {
+    const original = readText(mutant.file);
+    writeFileSync(mutant.file, mutant.mutated, "utf-8");
+    const result = runShell("npm test", scope.root, 120_000);
+    writeFileSync(mutant.file, original, "utf-8");
+
     if (result.error && result.error.message.includes("timed out")) {
-      notes.push({ code: "MT_TIMEOUT", detail: "mutmut timed out before completion." });
+      timeout += 1;
+      functions.push({
+        name: mutant.name,
+        file: relative(scope.root, mutant.file).replace(/\\/g, "/"),
+        score: 0,
+        critical: false,
+        surviving_mutants: [`timeout at line ${mutant.line}`],
+        cc: null,
+      });
+      continue;
     }
-    return parseMutmut(`${result.stdout}\n${result.stderr}`, scope.root, notes);
+    if ((result.status ?? 1) !== 0) {
+      killed += 1;
+      functions.push({
+        name: mutant.name,
+        file: relative(scope.root, mutant.file).replace(/\\/g, "/"),
+        score: 100,
+        critical: false,
+        surviving_mutants: [],
+        cc: null,
+      });
+      continue;
+    }
+    survived += 1;
+    functions.push({
+      name: mutant.name,
+      file: relative(scope.root, mutant.file).replace(/\\/g, "/"),
+      score: 0,
+      critical: false,
+      surviving_mutants: [`survived line ${mutant.line}`],
+      cc: null,
+    });
   }
 
-  if (language === "go") {
-    if (!probeBinary("go-mutesting", scope.root)) return null;
-    const target = scope.files.length === 1 ? relative(scope.root, scope.files[0]!) : "./...";
-    const result = runShell(`go-mutesting ${target}`, scope.root, 300_000);
-    if (result.error && result.error.message.includes("timed out")) {
-      notes.push({ code: "MT_TIMEOUT", detail: "go-mutesting timed out before completion." });
-    }
-    return parseGoMutesting(`${result.stdout}\n${result.stderr}`, scope.root, notes);
-  }
-
+  notes.push({
+    code: "MT_FALLBACK",
+    detail: "Used lightweight local mutation fallback because Stryker could not start in the current environment.",
+  });
+  const total = mutants.length;
   return {
-    tool: "pitest",
+    tool: "lightweight",
     incremental: false,
-    total_mutants: 0,
-    killed: 0,
-    survived: 0,
-    timeout: 0,
-    score: null,
-    functions: [],
-    notes: [
-      { code: "UNSUPPORTED_LANGUAGE", detail: "Java mutation testing is deferred in v1; Pitest integration is not implemented yet." },
-    ],
+    total_mutants: total,
+    killed,
+    survived,
+    timeout,
+    score: total > 0 ? (killed / total) * 100 : null,
+    functions,
+    notes,
+    raw_output: "",
+    exit_code: 0,
   };
+}
+
+function executeMutmut(scope: ScopeInfo, notes: MutationNote[]): RawMutationResult | null {
+  if (!probeBinary("mutmut", scope.root)) return null;
+  const target = scope.files.length === 1 ? relative(scope.root, scope.files[0]!) : ".";
+  const result = runShell(`mutmut run ${target}`, scope.root, 300_000);
+  noteTimeout(result, notes, "mutmut");
+  return parseMutmut(`${result.stdout}\n${result.stderr}`, scope.root, notes);
+}
+
+function executeGoMutesting(scope: ScopeInfo, notes: MutationNote[]): RawMutationResult | null {
+  if (!probeBinary("go-mutesting", scope.root)) return null;
+  const target = scope.files.length === 1 ? relative(scope.root, scope.files[0]!) : "./...";
+  const result = runShell(`go-mutesting ${target}`, scope.root, 300_000);
+  noteTimeout(result, notes, "go-mutesting");
+  return parseGoMutesting(`${result.stdout}\n${result.stderr}`, scope.root, notes);
+}
+
+function executeCargoMutants(scope: ScopeInfo, notes: MutationNote[]): RawMutationResult | null {
+  if (!probeBinary("cargo-mutants", scope.root)) return null;
+  const result = runShell("cargo mutants", scope.root, 300_000);
+  noteTimeout(result, notes, "cargo-mutants");
+  const parsed = parseCargoMutants(`${result.stdout}\n${result.stderr}`, notes);
+  parsed.exit_code = result.status;
+  return parsed;
 }
 
 function attachComplexity(functions: MutationFunctionResult[], complexity: Map<string, number>): MutationFunctionResult[] {
@@ -568,14 +757,20 @@ function persistMutationReport(
   report: MutationReport,
   service: ServiceInfo,
   config: ResolvedConfig,
-  llm: LLMIdentity
+  llm: ActorIdentity
 ): void {
   const storage = buildStoragePaths(service.rootPath, service, config.value.metrics.db_path);
   const filePath = buildFilePath(storage, llm, "mutation", new Date());
   writeRecord(filePath, {
-    schema_version: 1,
+    schema_version: 2,
+    check_type: "mutation",
     timestamp: new Date().toISOString(),
-    path: report.path,
+    project_path: report.path,
+    org: storage.org,
+    repo: storage.repo,
+    service: storage.service,
+    git_commit: storage.commit8,
+    branch: storage.branch,
     scope: report.scope,
     trigger: report.trigger,
     tool: report.tool,
@@ -591,17 +786,52 @@ function persistMutationReport(
     functions: report.functions,
     criteria: report.criteria,
     notes: report.notes,
-    llm_provider: llm.provider,
-    llm_model: llm.model,
-    llm_id: llm.id,
+    ...actorFields(llm),
   });
+}
+
+function makeMutationReport(
+  targetPath: string,
+  start: number,
+  trigger: MutationTrigger,
+  scope: ScopeInfo,
+  criteria: CriterionResult[],
+  notes: MutationNote[],
+  overrides: Partial<MutationReport> = {}
+): MutationReport {
+  return {
+    path: resolve(targetPath),
+    status: buildStatus(criteria),
+    trigger,
+    tool: null,
+    language: scope.language,
+    incremental: false,
+    criteria,
+    notes,
+    durationMs: Date.now() - start,
+    total_mutants: 0,
+    killed: 0,
+    survived: 0,
+    timeout: 0,
+    score: null,
+    scope: scope.root,
+    functions: [],
+    ...overrides,
+  };
+}
+
+function missingDependencyForLanguage(language: MutationLanguage): string {
+  if (language === "python") return "mutmut";
+  if (language === "go") return "go-mutesting";
+  if (language === "rust") return "cargo-mutants";
+  return "stryker";
 }
 
 export async function runMutation(
   targetPath: string,
   service: ServiceInfo,
   config: ResolvedConfig,
-  llm: LLMIdentity
+  llm: ActorIdentity
 ): Promise<MutationReport> {
   const start = Date.now();
   const scope = detectScope(targetPath, service);
@@ -616,24 +846,7 @@ export async function runMutation(
       detail: "Mutation testing is disabled in configuration.",
       fix: "Enable mutation.enabled to run mutation analysis.",
     });
-    const report: MutationReport = {
-      path: resolve(targetPath),
-      status: buildStatus(criteria),
-      trigger,
-      tool: null,
-      language: scope.language,
-      incremental: false,
-      criteria,
-      notes,
-      durationMs: Date.now() - start,
-      total_mutants: 0,
-      killed: 0,
-      survived: 0,
-      timeout: 0,
-      score: null,
-      scope: scope.root,
-      functions: [],
-    };
+    const report = makeMutationReport(targetPath, start, trigger, scope, criteria, notes);
     persistMutationReport(report, service, config, llm);
     return report;
   }
@@ -659,24 +872,7 @@ export async function runMutation(
         : "No supported mutation-testing language was detected in the requested scope.",
       fix: "Run check_mutation_score on a single-language directory or file.",
     });
-    const report: MutationReport = {
-      path: resolve(targetPath),
-      status: buildStatus(criteria),
-      trigger,
-      tool: null,
-      language: scope.language,
-      incremental: false,
-      criteria,
-      notes,
-      durationMs: Date.now() - start,
-      total_mutants: 0,
-      killed: 0,
-      survived: 0,
-      timeout: 0,
-      score: null,
-      scope: scope.root,
-      functions: [],
-    };
+    const report = makeMutationReport(targetPath, start, trigger, scope, criteria, notes);
     persistMutationReport(report, service, config, llm);
     return report;
   }
@@ -690,29 +886,12 @@ export async function runMutation(
       fix: "Use check_mutation_score on TS/JS, Python, or Go in v1, or implement Pitest support in a follow-up story.",
     });
     notes.push({ code: "UNSUPPORTED_LANGUAGE", detail: "Java mutation testing is deferred in v1; Pitest integration is not implemented yet." });
-    const report: MutationReport = {
-      path: resolve(targetPath),
-      status: buildStatus(criteria),
-      trigger,
-      tool: null,
-      language: scope.language,
-      incremental: false,
-      criteria,
-      notes,
-      durationMs: Date.now() - start,
-      total_mutants: 0,
-      killed: 0,
-      survived: 0,
-      timeout: 0,
-      score: null,
-      scope: scope.root,
-      functions: [],
-    };
+    const report = makeMutationReport(targetPath, start, trigger, scope, criteria, notes);
     persistMutationReport(report, service, config, llm);
     return report;
   }
   if (!raw) {
-    const dependency = scope.language === "python" ? "mutmut" : scope.language === "go" ? "go-mutesting" : "stryker";
+    const dependency = missingDependencyForLanguage(scope.language);
     const dep = DEPENDENCY_REGISTRY[dependency];
     criteria.push({
       id: "MT-D",
@@ -721,24 +900,7 @@ export async function runMutation(
       fix: Object.values(dep.install).join(" | "),
     });
     notes.push({ code: "DEPENDENCY_MISSING", detail: `Mutation testing for ${scope.language} requires ${dependency}.` });
-    const report: MutationReport = {
-      path: resolve(targetPath),
-      status: buildStatus(criteria),
-      trigger,
-      tool: null,
-      language: scope.language,
-      incremental: false,
-      criteria,
-      notes,
-      durationMs: Date.now() - start,
-      total_mutants: 0,
-      killed: 0,
-      survived: 0,
-      timeout: 0,
-      score: null,
-      scope: scope.root,
-      functions: [],
-    };
+    const report = makeMutationReport(targetPath, start, trigger, scope, criteria, notes);
     persistMutationReport(report, service, config, llm);
     return report;
   }

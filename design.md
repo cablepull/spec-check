@@ -7,7 +7,14 @@ Feature F-8 (Artifact Validation), Feature F-9 (Assumption Tracking),
 Feature F-10 (Diff-Based Change Detection), Feature F-11 (Code Complexity Analysis),
 Feature F-12 (Mutation Testing), Feature F-13 (Storage and Metrics),
 Feature F-14 (Dependency Management), Feature F-15 (Configuration),
-Feature F-16 (Monorepo Detection and Routing)
+Feature F-16 (Monorepo Detection and Routing),
+Feature F-17 (Rust and WASM Language Support),
+Feature F-18 (Story-First Enforcement),
+Feature F-19 (ADR Blocking on Structural Diff Triggers),
+Feature F-20 (Reconciliation Gate),
+Feature F-21 (Evidence Artifacts),
+Feature F-22 (Workflow Governance),
+Feature F-23 (Agent Identity and Session Attribution)
 
 ## Requirement Traceability
 
@@ -43,6 +50,25 @@ This design satisfies the following requirement rules:
 | R-35–R-36 | Dependency management | Dependency Registry (Story 014) |
 | R-37–R-38 | Configuration | Config Loader (Story 021) |
 | R-39–R-40 | Monorepo detection | Monorepo Detector (Story 022) |
+| R-41 | Dependency check discovers Rust toolchain components | Dependency Registry + Runtime Detector (Story 023) |
+| R-42 | cargo-mutants mutation testing | Mutation Runner — Rust extension (Story 023) |
+| R-43 | cargo test execution in G5 | Gate Engine → G5 — Rust test runner (Story 023) |
+| R-44 | wasm-pack test detection in G5 | Gate Engine → G5 — WASM detector (Story 023) |
+| R-45 | Story artifact must exist before tasks proceed | Story Enforcer → S-5 criterion (Story 024) |
+| R-46 | Story passes artifact validation before gate checks proceed | Story Enforcer → prerequisite chain (Story 024) |
+| R-47 | New dependency in diff blocks until ADR present | Diff Analyser → D-ADR-1 criterion (Story 025) |
+| R-48 | Security constraint change in diff blocks until ADR present | Diff Analyser → D-ADR-2 criterion (Story 025) |
+| R-49 | Deployment topology change in diff blocks until ADR present | Diff Analyser → D-ADR-3 criterion (Story 025) |
+| R-50 | README claims consistent with repository artifacts | Reconciliation Gate → RC-1 criterion (Story 026) |
+| R-51 | Task completion claims consistent with artifact content | Reconciliation Gate → RC-2 criterion (Story 026) |
+| R-52 | Verification evidence present when release artifact exists | Evidence Scanner → EV-1 criterion (Story 027) |
+| R-53 | Benchmark results present for performance-sensitive components | Evidence Scanner → EV-2 criterion (Story 027) |
+| R-54 | Machine-readable next-action guidance returned | Workflow Policy Engine + MCP Response Envelope (Story 028) |
+| R-55 | Metrics obligations computed from workflow state | Workflow Policy Engine + Agent State Store (Story 028) |
+| R-56 | Explicit agent state reporting supported | Workflow Session Tools + Agent State Store (Stories 028–029) |
+| R-57 | Agents distinguished by identity and kind | Actor Identity Resolver + Agent State Store (Story 029) |
+| R-58 | Agent/session identity persisted on records | Storage Writer + Actor Identity fields (Stories 029–030) |
+| R-59 | Agent-session workflow tools exposed | MCP Tool Router + Workflow Session Tools (Story 029) |
 
 ## Components
 
@@ -150,11 +176,59 @@ generates default config if needed (Stryker), executes incrementally where suppo
 parses output into the standard mutation schema. Identifies spec-critical functions by
 name matching against requirement Rules and Examples.
 
+### Rust Runtime Detector
+Extends `detectRuntimes()` with probes for `cargo`, `rustc`, and `wasm-pack` using the
+same `probeBinary` mechanism as existing runtimes. Added to the dependency registry with
+install commands pointing to `rustup` (for cargo/rustc) and `cargo install wasm-pack`
+(for wasm-pack). `cargo-mutants` is registered as an analysis tool with `cargo install
+cargo-mutants` as the install command and `"rust"` as the language tag.
+
+### Mutation Runner — Rust Extension
+Adds `"rust"` to the mutation language map. On detecting `.rs` files in scope, routes to
+`cargo-mutants`. Invokes `cargo mutants --json` in the project root, parses the JSON
+output into the standard mutation schema (mutants_generated, mutants_killed, score).
+Applies MT-1 and MT-2 threshold checks against the result. Falls back to a structured
+`TOOL_NOT_FOUND` result if `cargo-mutants` is absent, including install guidance.
+
+### G5 Rust Test Runner
+Extends the Gate 5 executability check with a Cargo-aware path. When a `Cargo.toml` is
+present in the project root, the checker inspects its `[dependencies]` section for
+`wasm-bindgen`. If found and `wasm-pack` is available, `wasm-pack test --headless` is
+used as the test command and listed in the result; if `wasm-pack` is absent, a WARNING
+is returned and `cargo test` is used as the fallback. For all other Rust projects, `cargo
+test` is executed directly. Exit code and stderr are captured; a non-zero exit produces a
+BLOCK on E-1 with the stderr output included.
+
+### Story Enforcer
+Scans the `stories/` directory for story files at the start of Gate 4 task evaluation.
+Attempts to match each task's identifier or keyword against present story files.
+Returns S-5 BLOCK when no story file can be matched to any task, listing all unmatched
+identifiers in the evidence field. Also exposes the story validation prerequisite status
+to gate check result payloads: when `check_story` returns S-2 VIOLATION, downstream gate
+results include a prerequisite note referencing the failing story.
+
 ### Diff Analyser
 Invokes `git diff` via subprocess. Categorises changed files using extension and path
 pattern matching. Applies reconciliation rules per category pair. Scans diff content
 (added lines) for ADR trigger signals using the NLP Engine. Returns structured violations
-and warnings per reconciliation rule.
+and warnings per reconciliation rule. Extended with three blocking ADR criteria:
+D-ADR-1 (new dependencies), D-ADR-2 (security-related changes), D-ADR-3 (deployment
+manifest changes). Each criterion scans the `adr/` directory for a matching ADR and
+returns BLOCK (not VIOLATION) when none is found, with the missing ADR path in evidence.
+
+### Reconciliation Gate
+Implements the `check_reconciliation` tool. Extracts feature claims from the README using
+a signal phrase list and checks each claim against source file paths. Extracts artifact
+paths from checked task checkboxes in tasks.md and checks each path for file presence.
+Returns RC-1 VIOLATION for each unmatched README claim and RC-2 VIOLATION for each
+checked task whose referenced artifact is absent, with the missing path in evidence.
+
+### Evidence Scanner
+Implements the `check_evidence` tool. Scans the `release/` directory for release artifact
+files and checks each against the `verification/` directory for a matching verification
+file, returning EV-1 VIOLATION when absent. Scans source files for benchmark annotations
+and checks each against the `benchmarks/` directory for a matching result file, returning
+EV-2 WARNING when absent. Both checks include the expected file path in evidence output.
 
 ### Monorepo Detector
 Applies the four-step auto-detection algorithm (workspaces → subdirectory manifests →

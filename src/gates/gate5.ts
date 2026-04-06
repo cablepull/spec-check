@@ -1,6 +1,7 @@
 // Gate 5 — Executability Valid
 // Checks E-1 through E-3 against project tests and rule coverage.
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
+import { spawnSync } from "child_process";
 import { join, relative } from "path";
 import type { GateResult, CriterionResult, ResolvedConfig } from "../types.js";
 import { getThreshold } from "../config.js";
@@ -152,6 +153,98 @@ function hasSpecStyleLanguage(testFiles: string[]): { pass: boolean; evidence: s
   return { pass: evidence.length > 0, evidence: evidence.slice(0, 5) };
 }
 
+// ── Generic test runner ───────────────────────────────────────────────────────
+
+interface CommandOutcome {
+  command: string;
+  exitCode: number | null;
+  stderr: string;
+}
+
+function runOne(command: string, projectRoot: string): CommandOutcome {
+  const result = spawnSync(command, {
+    shell: true,
+    cwd: projectRoot,
+    encoding: "utf-8",
+    timeout: 120_000,
+    env: process.env,
+  });
+  return {
+    command,
+    exitCode: result.status,
+    stderr: (result.stderr ?? "").trim().slice(0, 800),
+  };
+}
+
+/**
+ * Ecosystem probes used when no explicit test_commands are configured.
+ * Each entry: [sentinel file/condition, default command, optional sub-check].
+ * Probes are evaluated in order; all matching ecosystems are included.
+ */
+interface EcosystemProbe {
+  sentinel: string;
+  /** If set, the sentinel file must contain this substring for the probe to match. */
+  contains?: string;
+  command: string;
+  label: string;
+}
+
+const ECOSYSTEM_PROBES: EcosystemProbe[] = [
+  { sentinel: "Cargo.toml", command: "cargo test",     label: "Rust"       },
+  { sentinel: "go.mod",     command: "go test ./...",   label: "Go"         },
+  { sentinel: "package.json", contains: '"test"',
+                             command: "npm test",        label: "Node/npm"   },
+  { sentinel: "pyproject.toml",
+                             command: "python -m pytest", label: "Python"   },
+  { sentinel: "setup.py",   command: "python -m pytest", label: "Python"   },
+  { sentinel: "Makefile",   contains: "\ntest:",
+                             command: "make test",       label: "Make"       },
+  { sentinel: "build.gradle",
+                             command: "gradle test",     label: "Gradle/JVM" },
+  { sentinel: "pom.xml",    command: "mvn test",         label: "Maven/JVM"  },
+  { sentinel: "mix.exs",    command: "mix test",         label: "Elixir"     },
+  { sentinel: "Gemfile",    command: "bundle exec rspec", label: "Ruby"      },
+];
+
+/**
+ * Resolve which test commands to run.
+ *
+ * Priority:
+ *   1. `test_commands` in config  — explicit list, use as-is
+ *   2. `test_command`  in config  — single override
+ *   3. Auto-detect via ECOSYSTEM_PROBES (all matching ecosystems)
+ */
+function resolveTestCommands(
+  projectRoot: string,
+  configCommand?: string,
+  configCommands?: string[]
+): { commands: string[]; autoDetected: boolean } {
+  if (configCommands && configCommands.length > 0) {
+    return { commands: configCommands, autoDetected: false };
+  }
+  if (configCommand) {
+    return { commands: [configCommand], autoDetected: false };
+  }
+
+  const detected: string[] = [];
+  for (const probe of ECOSYSTEM_PROBES) {
+    const sentinelPath = join(projectRoot, probe.sentinel);
+    if (!existsSync(sentinelPath)) continue;
+    if (probe.contains) {
+      const content = readFile(sentinelPath);
+      if (!content.includes(probe.contains)) continue;
+    }
+    // Deduplicate — don't add the same command twice (e.g. two Python sentinels).
+    if (!detected.includes(probe.command)) {
+      detected.push(probe.command);
+    }
+  }
+
+  return { commands: detected, autoDetected: true };
+}
+
+// ── Gate entry point ──────────────────────────────────────────────────────────
+
 export async function runGate5(
   specPath: string,
   projectRoot: string,
@@ -161,14 +254,22 @@ export async function runGate5(
   const criteria: CriterionResult[] = [];
 
   const testFiles = walkTests(projectRoot);
+  const { commands, autoDetected } = resolveTestCommands(
+    projectRoot,
+    config.value.test_command,
+    config.value.test_commands
+  );
 
-  // ── E-1: Test files exist ──────────────────────────────────────────────────
-  if (testFiles.length === 0) {
+  // ── E-1: Test files present and all test commands pass ────────────────────
+  if (testFiles.length === 0 && commands.length === 0) {
     criteria.push({
       id: "E-1",
       status: "BLOCK",
-      detail: "No test files found matching supported test file patterns.",
-      fix: "Add test files such as `*.test.ts`, `*.spec.ts`, or files under `test/`, `tests/`, or `__tests__/`.",
+      detail: "No test files found and no test runner detected.",
+      fix: [
+        "Add test files (*.test.ts, *.spec.rs, test/*.py, …) or set `test_commands` in spec-check.config.json.",
+        "Example: { \"test_commands\": [\"npm test\", \"cargo test\"] }",
+      ].join(" "),
     });
     return {
       gate: "G5",
@@ -179,12 +280,52 @@ export async function runGate5(
     };
   }
 
-  criteria.push({
-    id: "E-1",
-    status: "PASS",
-    detail: `${testFiles.length} test file(s) found.`,
-    evidence: testFiles.slice(0, 5).map((file) => relative(projectRoot, file)),
-  });
+  if (commands.length > 0) {
+    const outcomes = commands.map((cmd) => runOne(cmd, projectRoot));
+    const failures = outcomes.filter((o) => o.exitCode !== 0);
+    const evidence = [
+      ...testFiles.slice(0, 5).map((f) => relative(projectRoot, f)),
+      ...(autoDetected ? ["(commands auto-detected)"] : []),
+    ];
+
+    if (failures.length > 0) {
+      const detail = failures
+        .map((o) => `\`${o.command}\` exited with code ${o.exitCode}`)
+        .join("; ");
+      const errEvidence = failures.flatMap((o) => o.stderr ? [o.stderr] : []);
+      criteria.push({
+        id: "E-1",
+        status: "BLOCK",
+        detail,
+        evidence: errEvidence,
+        fix: "Fix failing tests reported above before proceeding.",
+      });
+      return {
+        gate: "G5",
+        name: "Executability Valid",
+        status: "BLOCKED",
+        criteria,
+        durationMs: Date.now() - start,
+      };
+    }
+
+    const passed = outcomes.map((o) => `\`${o.command}\``).join(", ");
+    criteria.push({
+      id: "E-1",
+      status: "PASS",
+      detail: `${testFiles.length} test file(s) found. ${passed} exited 0.`,
+      evidence,
+    });
+  } else {
+    // Test files exist but no runner was detected or configured — warn, don't block.
+    criteria.push({
+      id: "E-1",
+      status: "WARNING",
+      detail: `${testFiles.length} test file(s) found but no test runner was detected.`,
+      evidence: testFiles.slice(0, 5).map((f) => relative(projectRoot, f)),
+      fix: "Set `test_commands` in spec-check.config.json to specify how to run the test suite.",
+    });
+  }
 
   // ── E-2: Each Rule has a corresponding test ────────────────────────────────
   const reqFile = findRequirementsFile(specPath);

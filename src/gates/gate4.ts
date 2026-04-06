@@ -4,7 +4,7 @@
 // Assumption: tasks are markdown checkbox lines: "- [ ] ..." or "- [x] ..."
 // Assumption: "traces to a rule" is detected by presence of a Rule ID (R-N, F-N, Story NNN)
 //   in or immediately after the task line — checked within a 3-line window.
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import type { GateResult, CriterionResult, ResolvedConfig } from "../types.js";
 import { detectCompoundTask } from "../nlp.js";
@@ -188,6 +188,38 @@ export async function runGate4(specPath: string, config: ResolvedConfig): Promis
     });
   } else {
     criteria.push({ id: "T-5", status: "PASS", detail: "Assumptions section present." });
+  }
+
+  // ── S-5: Story artifact must exist before implementation tasks proceed ────────
+  const storiesDir = join(specPath, "stories");
+  if (!existsSync(storiesDir)) {
+    criteria.push({
+      id: "S-5",
+      status: "WARNING",
+      detail: "No stories/ directory found. Story-first enforcement is not active for this project.",
+      fix: "Create a stories/ directory and add story artifacts to enable story-first enforcement.",
+    });
+  } else {
+    let storyFiles: string[] = [];
+    try {
+      storyFiles = readdirSync(storiesDir).filter((f) => f.endsWith(".md"));
+    } catch { /* ignore read errors — treat as empty */ }
+
+    if (storyFiles.length === 0) {
+      criteria.push({
+        id: "S-5",
+        status: "BLOCK",
+        detail: "A stories/ directory exists but contains no story artifacts. Implementation tasks cannot proceed without a corresponding story.",
+        fix: "Add a story file (e.g. stories/001-your-feature.md) with Intent, Acceptance Criteria, and Assumptions sections before proceeding.",
+      });
+    } else {
+      criteria.push({
+        id: "S-5",
+        status: "PASS",
+        detail: `${storyFiles.length} story artifact(s) present in stories/.`,
+        evidence: storyFiles.slice(0, 5),
+      });
+    }
   }
 
   // ── Determine gate status ───────────────────────────────────────────────────

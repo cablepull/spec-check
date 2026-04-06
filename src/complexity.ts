@@ -3,10 +3,11 @@ import { join, relative, resolve, extname } from "path";
 import { tmpdir } from "os";
 import { spawnSync } from "child_process";
 import { parse } from "@typescript-eslint/parser";
-import type { CriterionResult, GateStatus, LLMIdentity, ResolvedConfig, ServiceInfo } from "./types.js";
+import type { ActorIdentity, CriterionResult, GateStatus, ResolvedConfig, ServiceInfo } from "./types.js";
 import { getThreshold } from "./config.js";
-import { buildFilePath, buildStoragePaths, writeRecord } from "./storage.js";
+import { buildFilePath, buildStoragePaths, globPattern, runDuckQuery, writeRecord } from "./storage.js";
 import { DEPENDENCY_REGISTRY } from "./dependencies.js";
+import { actorFields } from "./workflow.js";
 
 type Tier = "tier1" | "tier2";
 type Language =
@@ -677,29 +678,21 @@ interface HistoricalMetric {
 
 function readHistory(dir: string): HistoricalMetric[] {
   if (!existsSync(dir)) return [];
-  const files: string[] = [];
-  function scan(current: string) {
-    for (const entry of readdirSync(current)) {
-      const full = join(current, entry);
-      const stat = statSync(full);
-      if (stat.isDirectory()) scan(full);
-      else if (entry.includes("_complexity_") && entry.endsWith(".jsonl")) files.push(full);
-    }
-  }
-  scan(dir);
+  const rows = runDuckQuery(`
+    SELECT timestamp, results
+    FROM read_parquet('${globPattern(dir).replace(/'/g, "''")}', union_by_name=true)
+    WHERE check_type = 'complexity'
+  `);
   const history: HistoricalMetric[] = [];
-  for (const file of files) {
-    const line = readText(file).trim();
-    if (!line) continue;
-    try {
-      const record = JSON.parse(line) as { results?: HistoricalMetric[]; timestamp?: string };
-      for (const item of record.results ?? []) {
-        history.push({
-          ...item,
-          timestamp: item.timestamp ?? record.timestamp ?? "",
-        });
-      }
-    } catch {}
+  for (const row of rows) {
+    let parsed: HistoricalMetric[] = [];
+    try { parsed = JSON.parse(row.results ?? "[]") as HistoricalMetric[]; } catch {}
+    for (const item of parsed) {
+      history.push({
+        ...item,
+        timestamp: item.timestamp ?? row.timestamp ?? "",
+      });
+    }
   }
   return history
     .filter((item) => item.timestamp)
@@ -823,7 +816,7 @@ function buildCriteria(metrics: ComplexityMetric[], fileResults: ComplexityFileR
   return criteria;
 }
 
-export async function runComplexity(service: ServiceInfo, config: ResolvedConfig, llm: LLMIdentity): Promise<ComplexityReport> {
+export async function runComplexity(service: ServiceInfo, config: ResolvedConfig, llm: ActorIdentity): Promise<ComplexityReport> {
   const start = Date.now();
   const root = service.rootPath;
   const files = walkFiles(root);
@@ -899,7 +892,8 @@ export async function runComplexity(service: ServiceInfo, config: ResolvedConfig
 
   const filePath = buildFilePath(storagePaths, llm, "complexity");
   writeRecord(filePath, {
-    schema_version: 1,
+    schema_version: 2,
+    check_type: "complexity",
     timestamp: new Date().toISOString(),
     project_path: root,
     org: storagePaths.org,
@@ -907,9 +901,10 @@ export async function runComplexity(service: ServiceInfo, config: ResolvedConfig
     service: storagePaths.service,
     git_commit: storagePaths.commit8,
     branch: storagePaths.branch,
-    llm_provider: llm.provider,
-    llm_model: llm.model,
-    llm_id: llm.id,
+    ...actorFields(llm),
+    status: statusFromCriteria(criteria),
+    criteria,
+    duration_ms: Date.now() - start,
     results: metrics.map((item) => ({
       signature: item.signature,
       file: item.file,
