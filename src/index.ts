@@ -103,7 +103,8 @@ const TOOL_DEFINITIONS: Tool[] = [
     inputSchema: {
       type: "object",
       properties: {
-        format: { type: "string", enum: ["json", "text"], description: "Output format (default: text)" },
+        format: { type: "string", enum: ["json", "text", "markdown"], description: "Output format (default: text)" },
+        path: { type: "string", description: "Project root path — if provided, active thresholds are resolved from project config" },
       },
     },
   },
@@ -556,7 +557,17 @@ function nextWorkflowForCheck(projectRoot: string, lastCompletedCheck: string | 
 
 async function handle_get_protocol(ctx: ToolCtx): Promise<McpResponse> {
   const fmt = (ctx.args.format as Format) ?? "text";
-  const doc = buildProtocol();
+  let resolvedThresholds: Record<string, number> | undefined;
+  let thresholdSources: Record<string, string> | undefined;
+  if (ctx.args.path) {
+    const absPath = resolve(String(ctx.args.path));
+    if (existsSync(absPath)) {
+      const { config: projConfig } = loadConfig(absPath);
+      resolvedThresholds = projConfig.value.thresholds as unknown as Record<string, number>;
+      thresholdSources = projConfig.sources;
+    }
+  }
+  const doc = buildProtocol(resolvedThresholds, thresholdSources);
   const output = fmt === "json" ? JSON.stringify(doc, null, 2) : protocolToMarkdown(doc);
   return toMcpContent(envelope(output, ctx.meta, computeWorkflowGuidance(process.cwd(), {
     current_goal: "read protocol",

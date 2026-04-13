@@ -21,6 +21,8 @@ function readPackageVersion(): string {
 }
 
 export interface ProtocolDoc {
+  protocol_version: number;
+  generated_at: string;
   version: string;
   name: string;
   description: string;
@@ -67,11 +69,32 @@ interface SeveritySpec {
 interface ThresholdDoc {
   description: string;
   defaults: Record<string, number>;
+  active: Record<string, { value: number; source: "default" | "global" | "project" }>;
   configKey: string;
 }
 
-export function buildProtocol(): ProtocolDoc {
+export function buildProtocol(
+  resolvedThresholds?: Record<string, number>,
+  thresholdSources?: Record<string, string>
+): ProtocolDoc {
+  const defaultThresholds: Record<string, number> = {
+    "I-2": 0.7, "I-3": 0.6, "I-4": 0.7, "I-5": 0.5,
+    "R-3": 0.8, "R-5": 0.7, "R-7": 0.8, "R-8": 0.8, "R-9": 0.7, "R-10": 0.5,
+    "D-3": 0.7, "D-4": 0.6,
+    "T-2": 0.8, "T-3": 0.7, "T-4": 0.6,
+    "E-2": 0.7, "AS-3": 0.8,
+  };
+  const active: Record<string, { value: number; source: "default" | "global" | "project" }> = {};
+  for (const [k, def] of Object.entries(defaultThresholds)) {
+    const resolved = resolvedThresholds?.[k] ?? def;
+    const rawSource = thresholdSources?.[`thresholds.${k}`] ?? "default";
+    const source: "default" | "global" | "project" =
+      rawSource === "global" ? "global" : rawSource === "project" ? "project" : "default";
+    active[k] = { value: resolved, source };
+  }
   return {
+    protocol_version: 1,
+    generated_at: new Date().toISOString(),
     version: readPackageVersion(),
     name: "spec-check",
     description:
@@ -351,14 +374,10 @@ export function buildProtocol(): ProtocolDoc {
       description:
         "NLP checks compare confidence (0.0–1.0) against thresholds. " +
         "Confidence below threshold → WARNING instead of VIOLATION. " +
-        "Thresholds are configurable in spec-check.config.json (project) or ~/.spec-check/config.json (global).",
-      defaults: {
-        "I-2": 0.7, "I-3": 0.6, "I-4": 0.7, "I-5": 0.5,
-        "R-3": 0.8, "R-5": 0.7, "R-7": 0.8, "R-8": 0.8, "R-9": 0.7, "R-10": 0.5,
-        "D-3": 0.7, "D-4": 0.6,
-        "T-2": 0.8, "T-3": 0.7, "T-4": 0.6,
-        "E-2": 0.7, "AS-3": 0.8,
-      },
+        "Thresholds are configurable in spec-check.config.json (project) or ~/.spec-check/config.json (global). " +
+        "The 'active' map shows the resolved value for each threshold and which config layer set it.",
+      defaults: defaultThresholds,
+      active,
       configKey: "thresholds",
     },
   };
@@ -367,7 +386,9 @@ export function buildProtocol(): ProtocolDoc {
 // ── Markdown renderer for get_protocol ────────────────────────────────────────
 export function protocolToMarkdown(doc: ProtocolDoc): string {
   const lines: string[] = [
-    `# spec-check Protocol v${doc.version}`,
+    `# spec-check Protocol v${doc.version} (protocol_version: ${doc.protocol_version})`,
+    "",
+    `*Generated at*: ${doc.generated_at}`,
     "",
     `> ${doc.description}`,
     "",
@@ -403,13 +424,13 @@ export function protocolToMarkdown(doc: ProtocolDoc): string {
         `- Returns: ${t.returns}`
     ),
     "",
-    "## Threshold Defaults",
+    "## Active Thresholds",
     "",
     doc.thresholds.description,
     "",
-    "| Check | Default Threshold |",
-    "|-------|-------------------|",
-    ...Object.entries(doc.thresholds.defaults).map(([k, v]) => `| ${k} | ${v} |`),
+    "| Check | Value | Source |",
+    "|-------|-------|--------|",
+    ...Object.entries(doc.thresholds.active).map(([k, e]) => `| ${k} | ${e.value} | ${e.source} |`),
   ];
   return lines.join("\n");
 }

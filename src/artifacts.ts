@@ -63,9 +63,17 @@ function inferArtifactKind(path: string, text: string): ArtifactKind | null {
   const normal = path.replace(/\\/g, "/").toLowerCase();
   const name = basename(normal);
 
-  if (normal.includes("/adr/") || /^adr[-_]/.test(name) || /alternatives considered/i.test(text)) return "adr";
-  if (normal.includes("/rca/") || /^rca[-_]/.test(name) || /violated requirement/i.test(text)) return "rca";
-  if (normal.includes("/stories/") || /^\d{3}-/.test(name)) return "story";
+  // Directory-based detection has highest priority
+  if (normal.includes("/adr/")) return "adr";
+  if (normal.includes("/rca/")) return "rca";
+  if (normal.includes("/stories/")) return "story";
+  // Filename prefix fallback
+  if (/^adr[-_]/.test(name)) return "adr";
+  if (/^rca[-_]/.test(name)) return "rca";
+  if (/^\d{3}-/.test(name)) return "story";
+  // Text-content fallback for files not in a standard directory
+  if (/alternatives considered/i.test(text)) return "adr";
+  if (/violated requirement/i.test(text)) return "rca";
   return null;
 }
 

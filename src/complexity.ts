@@ -314,6 +314,12 @@ func main() {
 
 function walkFiles(root: string): string[] {
   const files: string[] = [];
+  let rootStat: ReturnType<typeof statSync> | undefined;
+  try { rootStat = statSync(root); } catch { return files; }
+  if (rootStat.isFile()) {
+    if (EXTENSIONS[extname(root).toLowerCase()]) files.push(root);
+    return files;
+  }
   function scan(dir: string) {
     for (const entry of readdirSync(dir)) {
       if (entry.startsWith(".") || SKIP_DIRS.has(entry)) continue;
