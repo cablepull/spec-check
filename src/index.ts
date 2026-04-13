@@ -498,10 +498,24 @@ function toMcpContent(obj: unknown): { content: Array<{ type: "text"; text: stri
   };
 }
 
+const IDENTITY_REQUEST = {
+  message:
+    "Your model identity is unknown. Re-call this tool with the `llm` argument set to your model name " +
+    "(e.g. \"llm\": \"claude-sonnet-4-5\"). Identity is required for attribution, metrics, and audit trails.",
+  argument: "llm",
+  example: "claude-sonnet-4-5",
+  priority_sources: [
+    "1. `llm` argument on any tool call",
+    "2. SPEC_CHECK_LLM environment variable",
+    "3. `default_llm` in spec-check.config.json",
+  ],
+};
+
 function envelope<T>(
   data: T,
   meta: {
     llm_id: string;
+    llm_source: string;
     server_version: string;
     agent_id: string;
     agent_kind: string;
@@ -509,8 +523,10 @@ function envelope<T>(
     run_id: string;
   },
   workflow?: WorkflowGuidance
-): { data: T; meta: typeof meta; workflow?: WorkflowGuidance } {
-  return workflow ? { data, meta, workflow } : { data, meta };
+): { data: T; meta: typeof meta; workflow?: WorkflowGuidance; request_identity?: typeof IDENTITY_REQUEST } {
+  const base = workflow ? { data, meta, workflow } : { data, meta };
+  if (meta.llm_source === "fallback") return { ...base, request_identity: IDENTITY_REQUEST };
+  return base;
 }
 
 // ── Per-tool context (resolved inside main handler before dispatch) ─────────
@@ -519,7 +535,7 @@ interface ToolCtx {
   args: ToolArgs & Record<string, unknown>;
   config: ReturnType<typeof loadConfig>["config"];
   actor: ActorIdentity;
-  meta: { llm_id: string; server_version: string; agent_id: string; agent_kind: string; session_id: string; run_id: string };
+  meta: { llm_id: string; llm_source: string; server_version: string; agent_id: string; agent_kind: string; session_id: string; run_id: string };
 }
 
 type McpResponse = { content: Array<{ type: "text"; text: string }> };
@@ -527,6 +543,7 @@ type McpResponse = { content: Array<{ type: "text"; text: string }> };
 function actorMeta(actor: ActorIdentity): ToolCtx["meta"] {
   return {
     llm_id: actor.id,
+    llm_source: actor.source,
     server_version: SERVER_VERSION,
     agent_id: actor.agent_id,
     agent_kind: actor.agent_kind,
