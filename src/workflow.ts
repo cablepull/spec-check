@@ -173,18 +173,23 @@ export function computeWorkflowGuidance(projectRoot: string, state: AgentState):
   const implementationTouched = state.changed_paths.some((path) => /(^|\/)(src|lib|cmd)\//.test(path) || /\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(path));
   const mustCallNext = state.required_next_checks.length > 0
     ? state.required_next_checks
-    : state.last_completed_check === "G1" ? ["gate_check:G2"]
-    : state.last_completed_check === "G2" ? ["gate_check:G3"]
-    : state.last_completed_check === "G3" ? ["gate_check:G4"]
-    : state.last_completed_check === "G4" ? ["gate_check:G5"]
+    // After an individual gate passes, use run_all for the remaining sweep rather than
+    // chaining gate_check one at a time — gate_check is for targeted re-checks after fixes.
+    : (state.last_completed_check === "G1" ||
+       state.last_completed_check === "G2" ||
+       state.last_completed_check === "G3" ||
+       state.last_completed_check === "G4") ? ["run_all"]
     : state.last_completed_check === "G5" ? ["metrics"]
+    : state.last_completed_check === "run_all" ? ["metrics"]
+    // Phase-based: direct to the one gate that is currently blocking (later gates would
+    // BLOCK immediately, so run_all would give no additional information).
     : phase === "intent" ? ["gate_check:G1"]
     : phase === "requirements" ? ["gate_check:G2"]
     : phase === "design" ? ["gate_check:G3"]
     : phase === "tasks" ? ["gate_check:G4"]
     : phase === "executability" ? ["gate_check:G5"]
     : implementationTouched ? ["metrics"]
-    : [];
+    : ["run_all"];
   const shouldCallMetrics = state.metrics_due ?? (implementationTouched || phase === "review");
   return {
     phase,

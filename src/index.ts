@@ -800,7 +800,7 @@ async function handle_run_all(ctx: ToolCtx): Promise<McpResponse> {
   return toMcpContent(envelope(
     fmt === "json" ? runResult : formatted,
     localMeta,
-    nextWorkflowForCheck(absPath, runResult.status === "PASS" || runResult.status === "PASSING_WITH_WARNINGS" ? "G5" : null, runResult.gates.flatMap((gate) => gate.criteria.filter((item) => item.status === "BLOCK" || item.status === "VIOLATION").map((item) => item.id)))
+    nextWorkflowForCheck(absPath, runResult.status === "PASS" || runResult.status === "PASSING_WITH_WARNINGS" ? "run_all" : null, runResult.gates.flatMap((gate) => gate.criteria.filter((item) => item.status === "BLOCK" || item.status === "VIOLATION").map((item) => item.id)))
   ));
 }
 
