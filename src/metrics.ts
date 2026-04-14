@@ -75,8 +75,9 @@ export interface ProjectMetrics {
     nesting_average: number | null;
     nesting_delta: number | null;
     spec_complexity_ratio: number | null;
+    violation_count: number | null;
     trend: TrendDirection;
-    history: Array<{ timestamp: string; avg_cc: number }>;
+    history: Array<{ timestamp: string; avg_cc: number; max_cc: number; violations: number }>;
   };
   mutation: {
     latest_score: number | null;
@@ -348,6 +349,8 @@ function isGateRow(row: any): boolean {
   return row.check_type === "gate" || /^G[1-5]$/.test(row.gate ?? "");
 }
 
+const CC1_THRESHOLD = 10;
+
 type ProjectRowBuckets = {
   gateRecords: GateRecord[];
   complexityRecords: ComplexityRecord[];
@@ -425,7 +428,7 @@ function computeComplexityMetrics(complexityRecords: ComplexityRecord[]): Projec
     cognitive_average: null, cognitive_delta: null,
     length_average: null, length_delta: null,
     nesting_average: null, nesting_delta: null,
-    spec_complexity_ratio: null, trend: "insufficient_data", history: [],
+    spec_complexity_ratio: null, violation_count: null, trend: "insufficient_data", history: [],
   };
   const complexityHistory = complexityRecords
     .map((record) => {
@@ -441,6 +444,7 @@ function computeComplexityMetrics(complexityRecords: ComplexityRecord[]): Projec
         avg_length_delta: average(values.map((item) => item.length_delta).filter((v): v is number => typeof v === "number")),
         avg_nesting_delta: average(values.map((item) => item.nesting_delta).filter((v): v is number => typeof v === "number")),
         max_cc: values.reduce((max, item) => Math.max(max, item.cc ?? 0), 0),
+        violations: values.filter((item) => (item.cc ?? 0) > CC1_THRESHOLD).length,
         avg_gap: average(values.map((item) => (item.cc ?? 0) - (item.scenario_count ?? 0))),
       };
     })
@@ -457,7 +461,8 @@ function computeComplexityMetrics(complexityRecords: ComplexityRecord[]): Projec
     result.nesting_average = latestComplexity.avg_nesting;
     result.nesting_delta = latestComplexity.avg_nesting_delta;
     result.spec_complexity_ratio = latestComplexity.avg_gap;
-    result.history = complexityHistory.map((item) => ({ timestamp: item.timestamp, avg_cc: item.avg_cc }));
+    result.violation_count = latestComplexity.violations;
+    result.history = complexityHistory.map((item) => ({ timestamp: item.timestamp, avg_cc: item.avg_cc, max_cc: item.max_cc, violations: item.violations }));
     result.trend = trend(complexityHistory.map((item) => item.avg_cc));
   }
   return result;
@@ -695,7 +700,7 @@ export async function getProjectMetrics(
       cognitive_average: null, cognitive_delta: null,
       length_average: null, length_delta: null,
       nesting_average: null, nesting_delta: null,
-      spec_complexity_ratio: null, trend: "insufficient_data", history: [],
+      spec_complexity_ratio: null, violation_count: null, trend: "insufficient_data", history: [],
     },
     mutation: { latest_score: null, latest_status: null, run_count: 0, trend: "insufficient_data", history: [] },
     assumptions: { invalidation_rate: null, supersession_rate: null, average_days_to_supersession: null },

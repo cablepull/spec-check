@@ -369,8 +369,8 @@ function renderProjectSection(metrics: ProjectMetrics): string {
         </article>
         <article class="card">
           <h3>Complexity</h3>
-          <p class="big">${num(metrics.complexity.cc_average)}</p>
-          <p class="muted">Max CC ${num(metrics.complexity.cc_max, 0)} · Δ ${trendArrow(metrics.complexity.cc_delta)}</p>
+          <p class="big">${num(metrics.complexity.cc_max, 0)}</p>
+          <p class="muted">Max CC · ${metrics.complexity.violation_count !== null ? `${metrics.complexity.violation_count} fn ≥ threshold` : "violations unknown"} · avg ${num(metrics.complexity.cc_average)}</p>
         </article>
         <article class="card">
           <h3>Mutation Score</h3>
@@ -542,25 +542,38 @@ function renderTrendsSection(metrics: ProjectMetrics): string {
     yMax: 100,
   });
 
-  // Complexity trend
-  const ccSeries: ChartSeries[] = [{
-    label: "Avg CC",
-    color: "#9a6700",
-    data: metrics.complexity.history.map((h) => ({
-      ts: new Date(h.timestamp).getTime(),
-      value: h.avg_cc,
-    })),
-  }];
+  // Complexity trend — max_cc is directly comparable to the per-function threshold;
+  // avg_cc is shown as a secondary context series (it sits well below the threshold
+  // even when many individual functions violate it, so plotting avg against the
+  // threshold line is a category error).
+  const ccSeries: ChartSeries[] = [
+    {
+      label: "Max CC",
+      color: "#9a6700",
+      data: metrics.complexity.history.map((h) => ({
+        ts: new Date(h.timestamp).getTime(),
+        value: h.max_cc,
+      })),
+    },
+    {
+      label: "Avg CC",
+      color: "#aaaaaa",
+      data: metrics.complexity.history.map((h) => ({
+        ts: new Date(h.timestamp).getTime(),
+        value: h.avg_cc,
+      })),
+    },
+  ];
   const ccMax = metrics.complexity.history.length > 0
-    ? Math.max(...metrics.complexity.history.map((h) => h.avg_cc)) * 1.2
+    ? Math.max(...metrics.complexity.history.map((h) => h.max_cc)) * 1.2
     : 20;
   const ccChart = svgLineChart(ccSeries, {
     width: 560,
     height: 180,
     yMin: 0,
-    yMax: Math.max(ccMax, 5),
+    yMax: Math.max(ccMax, 15),
     threshold: 10,
-    thresholdLabel: "CC≥10 threshold",
+    thresholdLabel: "CC-1 threshold (10)",
   });
 
   // Mutation trend
