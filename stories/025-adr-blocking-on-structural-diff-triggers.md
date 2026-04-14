@@ -7,7 +7,7 @@
 ## Intent
 
 Architectural changes are often introduced in small diffs that look operational rather
-than strategic. This story makes that drift explicit by teaching the diff analyser to
+than strategic. This story makes that drift explicit in order to ensure every structural decision is recorded before it becomes invisible in production. This enables the diff analyser to
 block merges when dependency, security, or deployment-topology changes appear without a
 corresponding ADR. The intent is not to classify every code change as architectural; it
 is to catch the specific structural triggers that the PRD calls out as decision records.

@@ -7,7 +7,7 @@
 ## Intent
 
 Complexity analysis should work out of the box for the most common languages in this
-project stack without requiring any installation. Tier 1 bundles AST-based analysis for
+project stack without requiring any installation, in order to lower the adoption barrier for teams that just want to know which functions are too complex. This enables immediate complexity visibility with no additional tooling required. Tier 1 bundles AST-based analysis for
 TypeScript/JavaScript, Python, and Go — the three languages present in the xcape-inc
 repositories. All four metrics (cyclomatic complexity, cognitive complexity, function
 length, nesting depth) are computed from the AST using published algorithms. Deltas

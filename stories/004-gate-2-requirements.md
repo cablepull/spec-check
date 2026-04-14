@@ -12,7 +12,7 @@ Feature → Rule → Example → Given/When/Then hierarchy, verifies that every 
 both a positive and a negative scenario, and prevents implementation language from
 leaking into the spec. An LLM that skips any of these steps produces specs that
 drift, mislead, or fail to cover edge cases. Gate 2 catches all of it before a line
-of design or code is written.
+of design or code is written, in order to ensure implementation is always grounded in a complete, correct specification. This enables design and code to proceed from a spec that has been structurally validated.
 
 ## Acceptance Criteria
 

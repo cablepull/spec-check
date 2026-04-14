@@ -6,8 +6,7 @@
 
 ## Intent
 
-A design document that does not reference the requirements it addresses is disconnected
-fiction — it may describe a system, but not necessarily the system being built. Gate 3
+The problem is that a design document disconnected from requirements may describe a system, but not necessarily the system being built — because without explicit traceability the design and the spec can drift apart silently. Gate 3
 enforces that a design exists, that it is traceable back to requirements, and that it
 describes something architectural rather than just restating the requirements in prose.
 D-4, the contradiction check, is deliberately the weakest criterion — it cannot be

@@ -6,7 +6,7 @@
 
 ## Intent
 
-Individual project metrics answer "how are we doing here." The cross-project rollup
+The problem is that individual project metrics answer only "how are we doing here." This enables organisation-wide pattern detection that no single project view can provide. The cross-project rollup
 answers "which model is most disciplined, which projects need attention, and where
 does the methodology break down most often across the whole organisation." It is the
 view that makes aggregate patterns visible — the recurring violation that every model

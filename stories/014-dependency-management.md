@@ -8,7 +8,7 @@
 
 The tool's analysis capabilities depend on external tools that may or may not be installed.
 A tool that silently skips analysis when a dependency is missing gives false confidence.
-A tool that crashes with a raw error is unusable. The dependency management system does
+A tool that crashes with a raw error is unusable. In order to prevent silent analysis gaps and raw crashes — this enables informed, confident dependency decisions — the dependency management system does
 three things: reports exactly what is available and what is not, offers to install what
 is missing with the correct command for the detected package manager, and when installation
 fails, explains precisely why — not just that it failed. Every failure has a category,

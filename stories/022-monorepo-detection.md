@@ -7,9 +7,9 @@
 ## Intent
 
 The `{service}` path segment is always present in the Parquet naming convention —
-`root` for flat repos, a named service for monorepo services. Without reliable service
+`root` for flat repos, a named service for monorepo services. The problem is that without reliable service
 detection, cross-service comparisons are impossible and whole-repo checks pollute
-per-service metrics. This story implements the detection logic — auto-detection for
+per-service metrics. This enables accurate per-service metrics and clean cross-service comparisons in monorepos. This story implements the detection logic — auto-detection for
 the global default case, explicit service configuration for the local override case —
 and ensures that every tool call routes its Parquet output and its spec artifact search
 to the correct service context. Whole-repo checks (diff, deps, ADR, RCA) always write

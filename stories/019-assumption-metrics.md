@@ -7,7 +7,7 @@
 ## Intent
 
 The assumption tracking system in Story 010 generates events — but events without
-aggregation are just a log. This story builds the metrics layer on top of those events:
+aggregation are just a log. This story builds the metrics layer on top of those events in order to make LLM assumption accuracy measurable and improvable. This enables assumption invalidation rate to become a tracked, comparable signal per model and per project:
 how often does each model make wrong assumptions, what categories of assumptions get
 invalidated most, how long does it take for a wrong assumption to surface, and which
 projects have the highest rates of rework driven by assumption failures. These are the

@@ -9,7 +9,7 @@
 Every other capability in spec-check depends on a running MCP server that correctly
 implements the MCP protocol, handles errors gracefully, records the calling LLM's identity
 on every request, and starts reliably across platforms. Without a solid foundation, every
-subsequent story is unstable. This story delivers the skeleton everything else is bolted to.
+subsequent story is unstable. This story delivers the skeleton everything else is bolted to, in order to ensure every subsequent capability rests on a reliable, tested base. This enables stable, predictable gate enforcement for all downstream stories.
 
 ## Acceptance Criteria
 

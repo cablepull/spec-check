@@ -7,7 +7,7 @@
 ## Intent
 
 Tier 1 covers the three languages most common in this project stack. Everything else —
-Java, C, C++, C#, Ruby, Swift, Rust, Scala, Kotlin — needs a different path. Lizard is
+Java, C, C++, C#, Ruby, Swift, Rust, Scala, Kotlin — needs a different path, because leaving those languages unanalysed would mean complexity debt is invisible for a large portion of the codebase. This enables consistent complexity enforcement across every language in the project, not just the primary stack. Lizard is
 the right tool: one CLI, 27+ languages, machine-readable output, fast. Tier 2 integrates lizard and
 its companion tools, handles the metrics they cannot provide (cognitive complexity and
 nesting depth for non-Tier-1 languages), reports those gaps honestly, and ensures that

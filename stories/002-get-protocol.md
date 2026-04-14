@@ -9,7 +9,7 @@
 An LLM connecting to spec-check for the first time has no guarantee its training data
 reflects the current version of the methodology. If the protocol evolves and the LLM
 operates on stale knowledge, enforcement becomes inconsistent — the very problem spec-check
-exists to solve. `get_protocol` makes the tool its own source of truth. Any LLM calls it
+exists to solve. `get_protocol` makes the tool its own source of truth because stale protocol knowledge is inconsistency waiting to happen. This enables every LLM session to begin from an accurate, current protocol baseline. Any LLM calls it
 once at the start of a session and has everything needed to follow the methodology correctly:
 every gate, every criterion, every artifact contract, the assumption format, and explicit
 guidance on which tool to call at each workflow stage.

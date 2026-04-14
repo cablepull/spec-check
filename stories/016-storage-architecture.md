@@ -6,7 +6,7 @@
 
 ## Intent
 
-Every check run produces data that should be queryable — not just retrievable. The storage
+Every check run produces data that should be queryable — not just retrievable — because flat-file retrieval cannot support the cross-project rollups, per-model comparisons, and trend analysis the metrics layer requires. This enables all metrics tools to share one fast, local query engine rather than bespoke per-check readers. The storage
 layer must support the full range of queries described in the PRD: cross-project rollups,
 per-model comparisons, per-branch comparisons, date-range filtering, check-type filtering,
 and service-level isolation in monorepos — all via glob patterns that prune at the filesystem

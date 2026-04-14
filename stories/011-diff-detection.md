@@ -6,7 +6,7 @@
 
 ## Intent
 
-Running `run_all` on every change is wasteful and generates noise. More importantly,
+The problem is that running `run_all` on every change is wasteful and generates noise — this enables targeted, actionable feedback on every commit without validation overhead. More importantly,
 full re-validation misses the relational violations that only matter when something
 changes — code changing without a story, a dependency added without an ADR, requirements
 changing without tasks being updated. `check_diff` understands what changed and applies

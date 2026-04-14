@@ -7,8 +7,8 @@
 ## Intent
 
 LLM identity alone is insufficient once multiple cooperating agents participate in a workflow.
-Spec-check must distinguish planner, implementer, reviewer, human, and CI actors; preserve
-session boundaries; and attribute state and persisted results to the right caller instance.
+Spec-check must distinguish planner, implementer, reviewer, human, and CI actors in order to provide meaningful attribution, auditability, and tailored workflow guidance — it must preserve
+session boundaries and attribute state and persisted results to the right caller instance.
 Without this, workflow guidance, auditing, and metrics attribution collapse into a single
 undifferentiated model label.
 

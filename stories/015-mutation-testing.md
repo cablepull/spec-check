@@ -7,9 +7,8 @@
 ## Intent
 
 Code coverage tells you what ran. Mutation score tells you whether the tests would
-catch a regression. For LLM-generated tests specifically, this distinction is critical —
-an LLM can produce tests that execute every line while asserting nothing meaningful,
-achieving 100% coverage with 0% behavioral constraint. Mutation testing seeds small
+catch a regression. For LLM-generated tests specifically, this distinction is critical — because an LLM can produce tests that execute every line while asserting nothing meaningful,
+achieving 100% coverage with 0% behavioral constraint. This enables behavioral coverage to be tracked and compared as a quality signal independent of line coverage. Mutation testing seeds small
 faults in the source and measures whether the test suite kills them. This story integrates
 mutation testing into spec-check: not as a blocking gate (it is too slow for that), but
 as a tracked metric that trends over time and surfaces as a WARNING when the score falls

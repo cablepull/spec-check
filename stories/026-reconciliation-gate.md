@@ -8,9 +8,8 @@
 
 Documentation drift is a form of spec debt. README files and completed tasks can claim
 capabilities or artifacts that are no longer present, and those mismatches undermine the
-credibility of the spec system itself. This story introduces a reconciliation gate that
-compares repository claims against actual files so public documentation and completion
-signals remain anchored to the repository state.
+credibility of the spec system itself. This story introduces a reconciliation gate because documentation drift undermines the credibility of the spec system itself — it must compare repository claims against actual files so public documentation and completion
+signals remain anchored to the repository state. This enables README and task completion claims to remain verifiable at any point in the project lifecycle.
 
 ## Acceptance Criteria
 

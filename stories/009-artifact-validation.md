@@ -7,9 +7,9 @@
 ## Intent
 
 Stories, ADRs, and RCAs are the living record of why the system was built, why it
-changed, and why it broke. If they are structurally incomplete — missing sections,
-invalid status values, no links to requirements — they fail at their core purpose of
-preserving traceability. This story enforces that every artifact of each type is
+changed, and why it broke. The problem is that structurally incomplete artifacts — missing sections,
+invalid status values, no links to requirements — fail at their core purpose of
+preserving traceability. This enables post-factum auditability for every design decision and incident. This story enforces that every artifact of each type is
 complete and internally consistent. Validation is on-demand per artifact and also
 runs automatically in `check_diff` when these files change.
 

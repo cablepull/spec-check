@@ -7,10 +7,10 @@
 ## Intent
 
 Tasks are the bridge between design and implementation. A task list that contains compound
-steps cannot be verified as done. A task list that doesn't trace back to requirements could
-be implementing anything. Gate 4 enforces atomicity and traceability before an LLM writes
-a single line of production code — ensuring the implementation plan is both verifiable and
-connected to what was actually specified.
+steps cannot be verified as done. A task list that does not trace back to requirements could
+be implementing anything. In order to prevent this, Gate 4 enforces atomicity and traceability
+before an LLM writes a single line of production code — the implementation plan must be both
+verifiable and connected to what was actually specified. This enables full traceability from requirement to implementation before a single line of production code is written.
 
 ## Acceptance Criteria
 

@@ -6,7 +6,7 @@
 
 ## Intent
 
-Numbers in isolation are hard to act on. An LLM reading a compliance score of 67% does
+The problem is that numbers in isolation are hard to act on — this enables trend, magnitude, and priority to be communicated at a glance in a format every LLM client can consume. An LLM reading a compliance score of 67% does
 not know if that is good, bad, improving, or stagnant without context. The visualization
 layer turns raw metrics into formats that communicate trend, magnitude, and priority at
 a glance — in the terminal, in a chat interface, and in markdown-rendered environments.

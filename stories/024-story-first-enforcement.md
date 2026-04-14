@@ -9,7 +9,7 @@
 The methodology says implementation must be story-driven, but that rule only matters if
 the system actively blocks task execution when no story artifact exists or when the
 linked story is structurally invalid. This story makes `stories/` a hard prerequisite
-for task execution and propagates story-validation failures into downstream gate output
+for task execution in order to enforce that implementation is always story-driven — because a task list without a backing story breaks the traceability chain — and propagates story-validation failures into downstream gate output
 so missing narrative context is caught before implementation proceeds.
 
 ## Acceptance Criteria

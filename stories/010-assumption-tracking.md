@@ -9,8 +9,8 @@
 LLMs fill in unspecified details silently. When those details turn out to be wrong,
 the resulting rework is invisible — nobody knows why the story changed, which model
 made the wrong call, or how often it happens. This story enforces that every LLM-authored
-artifact declares its assumptions explicitly, and that when a user invalidates an assumption
-the supersession is atomic, traceable, and recorded. Over time, the assumption invalidation
+artifact declares its assumptions explicitly, in order to make LLM accuracy measurable and improvable over time, and ensures that when a user invalidates an assumption
+the supersession is atomic, traceable, and recorded. This enables assumption invalidation rate to become a reliable quality signal per model and per project. Over time, the assumption invalidation
 rate becomes a measurable signal of LLM accuracy by model and by assumption category.
 
 ## Acceptance Criteria

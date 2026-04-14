@@ -6,7 +6,7 @@
 
 ## Intent
 
-Every team is at a different point in their spec-driven journey. A team adopting the
+Every team is at a different point in their spec-driven journey. Because one size does not fit all stages of spec adoption, a team adopting the
 methodology for the first time should not be blocked by thresholds calibrated for a
 mature team. A mature team should be able to tighten thresholds beyond the defaults.
 The configuration system provides a two-level hierarchy — global defaults at

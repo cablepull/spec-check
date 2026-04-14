@@ -7,9 +7,7 @@
 ## Intent
 
 A spec that has no corresponding tests is documentation. It may be correct today and
-wrong tomorrow. Gate 5 enforces that specs become executable — that tests exist, that
-they cover the Rules that were specified, and that they use language that mirrors the
-spec scenarios rather than testing implementation internals. This is the final gate
+wrong tomorrow. Gate 5 enforces that specs become executable in order to close the loop between written requirements and verified behaviour — tests must exist, cover the specified Rules, and use language that mirrors the spec scenarios rather than testing implementation internals. This enables the spec to be not just written but actively verified. This is the final gate
 before declaring a feature complete. Passing it means the spec is not only written
 but verifiable.
 

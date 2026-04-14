@@ -9,7 +9,7 @@
 The intent document is the WHY behind everything that follows. If it is missing, empty,
 or describes a solution without a problem, all downstream artifacts are built on an
 unstated foundation. Gate 1 enforces that an LLM has genuinely captured intent before
-it is allowed to proceed to requirements. The checks must be deterministic where possible
+it is allowed to proceed to requirements, in order to prevent all downstream artifacts from being built on an unclear or unstated foundation. This enables the gate sequence to enforce the methodology from the very first artifact. The checks must be deterministic where possible
 and tunable where NLP is involved — so teams can calibrate strictness as their process matures.
 
 ## Acceptance Criteria

@@ -6,7 +6,7 @@
 
 ## Intent
 
-Spec-check should do more than return isolated pass/fail results. It should actively govern
+Spec-check should do more than return isolated pass/fail results, because prose-only guidance is ambiguous and leads to inconsistent enforcement across LLM callers. This enables autonomous agents to follow the methodology deterministically from machine-readable obligations rather than inferred instructions. It should actively govern
 the workflow by telling the caller what to do next, when the workflow is blocked, and when
 metrics should be run. The server must express this guidance in machine-readable form so an
 LLM can follow the process deterministically instead of inferring it from prose alone.

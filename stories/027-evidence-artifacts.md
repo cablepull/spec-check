@@ -7,8 +7,8 @@
 ## Intent
 
 Release and performance claims need attached evidence, not just passing tests. This
-story adds evidence checks that require verification artifacts for releases and benchmark
-result files for performance-sensitive components. The goal is to keep production-facing
+story adds evidence checks in order to keep production-facing claims auditable — requiring verification artifacts for releases and benchmark
+result files for performance-sensitive components. This enables release and performance claims to be traced to concrete evidence without a heavyweight evidence system. The goal is to keep production-facing
 claims auditable without forcing a heavyweight evidence system into every project.
 
 ## Acceptance Criteria

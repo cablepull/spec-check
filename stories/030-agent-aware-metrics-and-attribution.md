@@ -7,7 +7,7 @@
 ## Intent
 
 Once the server distinguishes agent roles and sessions, those distinctions should become
-queryable. Metrics must be able to answer not just which model produced a result, but which
+queryable in order to make process failures traceable to their origin and enable systematic improvement of multi-agent workflows. This enables metrics to answer not just which model produced a result, but which agent kind, session, and delegated worker path introduced a violation. Metrics must be able to answer not just which model produced a result, but which
 agent kind, which session, and which delegated worker path produced process failures or
 successful outcomes. This story extends the metrics layer from model attribution to agent-
 aware workflow attribution.

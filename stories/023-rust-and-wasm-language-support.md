@@ -8,7 +8,7 @@
 
 `spec-check` currently treats Rust and WASM projects as second-class citizens even though
 the methodology is language-agnostic. This story extends dependency probing, mutation
-coverage, and executability checks so Rust repositories and WASM-targeted Rust projects
+coverage, and executability checks in order to uphold the methodology's language-agnostic promise — so Rust repositories and WASM-targeted Rust projects
 participate in the same quality signals as TypeScript, Python, and Go projects. The
 design must preserve the existing runtime-probe pattern and keep the G5 execution path
 deterministic across plain Rust and wasm-bindgen projects.

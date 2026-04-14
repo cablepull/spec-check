@@ -10,7 +10,7 @@ An LLM checking a project needs a single tool call that tells it the full pictur
 not five separate calls, not a mental model of which checks apply. `run_all` runs every
 gate in sequence, stops early when a BLOCK is encountered (there is no point checking
 Gate 3 if Gate 1 has a BLOCK), and returns a consolidated report with a clear next-steps
-section. It is the primary entry point for automated workflow enforcement.
+section. It is the primary entry point for automated workflow enforcement, because running all gates independently forces the caller to manage order, skip logic, and report aggregation manually. This enables consistent, automated workflow enforcement across all five gates in a single call.
 
 ## Acceptance Criteria
 
