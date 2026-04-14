@@ -81,80 +81,69 @@ function extractSourceSummary(content: string): string {
 
 // ─── Template builders ────────────────────────────────────────────────────────
 
-function buildIntentTemplate(projectTitle: string, sourceSummary: string): string {
-  return `# Intent
-
-## Problem
-
-The problem is that [PLACEHOLDER: describe the core user pain point in 1-2 specific sentences.
-What breaks, fails, or is missing? Who is harmed and how? Be concrete.].
-
-[PLACEHOLDER: 1-2 sentences explaining why existing approaches are inadequate or make things worse.
-What specifically fails about the status quo?].
-
-## Why this must be solved [PLACEHOLDER: replace with the specific constraint, e.g. "locally", "in the browser", "without a server"]
-
-Because [PLACEHOLDER: the causal reason the solution must take this particular form — what property
-of the problem forces the design choice]. Therefore, [PLACEHOLDER: the logical conclusion that
-rules out alternatives and leads to the intended approach].
+function buildStoryTemplate(projectTitle: string, sourceSummary: string): string {
+  return `# Story 001: [PLACEHOLDER: story title — the user need this addresses]
 
 ## Intent
 
-Build [PLACEHOLDER: describe what you are building at the level of purpose, not technology].
-The [PLACEHOLDER: tool/service/application] must [PLACEHOLDER: describe the primary capability].
-It should also [PLACEHOLDER: describe a secondary, verifiable guarantee — something users can
-confirm themselves].
+The problem is that [PLACEHOLDER: describe the core user pain point. What breaks, fails, or is
+missing? Who is affected and how? Be concrete].
 
-## What this is not
+Because [PLACEHOLDER: the causal reason this matters], users currently cannot
+[PLACEHOLDER: the blocked capability or outcome].
 
-This is not [PLACEHOLDER: the most obvious wrong interpretation — a cloud service, a desktop app, a CLI, etc.].
-This is not [PLACEHOLDER: an adjacent feature that is explicitly out of scope for v1].
-This is not [PLACEHOLDER: a third boundary — e.g. not an editor, not a format converter].
+We need this in order to [PLACEHOLDER: the value delivered when this story is done].
+Only [PLACEHOLDER: the constrained scope — what is in and out] must be addressed.
 
-## Constraints
+## Acceptance Criteria
 
-- [PLACEHOLDER: the most important non-negotiable property — often a security or privacy bound]
-- [PLACEHOLDER: a second hard constraint — often a performance or deployment requirement]
-- [PLACEHOLDER: a third constraint — often an offline or compatibility requirement]
-- Output must be verifiable: [PLACEHOLDER: describe how a user can independently confirm it works]
+- [ ] [PLACEHOLDER: observable outcome a user or test can verify]
+- [ ] [PLACEHOLDER: second verifiable criterion]
+- [ ] [PLACEHOLDER: rejection/error case — what should NOT happen]
+
+## ADR Required
+
+No
+
+## Requirements
+
+[PLACEHOLDER: reference to PRD section, Feature ID, or Rule ID — e.g. "F-1 in prd/001-feature.md"]
 
 ## Assumptions
 
-| # | Assumption | Basis | Impact if wrong |
-|---|-----------|-------|-----------------|
-| A1 | [PLACEHOLDER: state as uncertain — use "assumed", "inferred", "not yet confirmed"] | [PLACEHOLDER: why you believe this is currently true] | [PLACEHOLDER: what breaks and what the fallback would be] |
-| A2 | [PLACEHOLDER: a second assumption] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact] |
-| A3 | [PLACEHOLDER: a third assumption] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact] |
+| ID | Assumption | Basis | Status |
+|----|-----------|-------|--------|
+| A-001 | [PLACEHOLDER: an uncertain belief about user behaviour or constraints] | [PLACEHOLDER: why you believe this] | assumed |
+| A-002 | [PLACEHOLDER: a second assumption] | [PLACEHOLDER: basis] | assumed |
 `;
 }
 
-function buildRequirementsTemplate(projectTitle: string): string {
-  return `# Requirements
+function buildPrdTemplate(projectTitle: string): string {
+  return `# PRD 001: [PLACEHOLDER: feature name]
 
 ## Feature F-1: [PLACEHOLDER: first major capability area, e.g. "File Input"]
 
-### Rule R-1: Validate [PLACEHOLDER: the condition that must be true, e.g. "accepted file types are limited to supported formats"]
-Example: [PLACEHOLDER: name the happy-path scenario]
-  Given [PLACEHOLDER: describe the pre-existing state — NOT an action. "a file with extension .jpg in the input" not "the user drops a file"]
-  When [PLACEHOLDER: the single action that triggers this behaviour]
-  Then [PLACEHOLDER: the observable result — what a user or test can see/verify]
+### Rule R-1: Validate [PLACEHOLDER: condition that must be true]
+Example: [PLACEHOLDER: happy-path scenario name]
+  Given [PLACEHOLDER: pre-existing state — NOT an action]
+  When [PLACEHOLDER: single triggering action]
+  Then [PLACEHOLDER: observable result a user or test can verify]
 
-Example: [PLACEHOLDER: name the rejection or error scenario — every Rule needs one]
-  Given [PLACEHOLDER: describe the state that should trigger rejection]
-  When [PLACEHOLDER: the triggering action]
-  Then [PLACEHOLDER: the rejection is visible — error message, absent element, blocked action]
-  And [PLACEHOLDER: any additional observable consequence]
+Example: [PLACEHOLDER: rejection or error scenario — every Rule needs one]
+  Given [PLACEHOLDER: state that triggers rejection]
+  When [PLACEHOLDER: triggering action]
+  Then [PLACEHOLDER: visible rejection — error message, blocked action]
 
-### Rule R-2: Validate [PLACEHOLDER: a second condition for this Feature]
+### Rule R-2: Validate [PLACEHOLDER: second condition for this Feature]
 Example: [PLACEHOLDER: positive case]
-  Given [PLACEHOLDER: state description]
+  Given [PLACEHOLDER: state]
   When [PLACEHOLDER: action]
   Then [PLACEHOLDER: observable outcome]
 
-Example: [PLACEHOLDER: negative case — rejection, error, or edge case failure]
-  Given [PLACEHOLDER: state that triggers the failure path]
+Example: [PLACEHOLDER: negative case]
+  Given [PLACEHOLDER: state that triggers failure]
   When [PLACEHOLDER: action]
-  Then [PLACEHOLDER: the visible rejection or error]
+  Then [PLACEHOLDER: visible rejection or error]
 
 ---
 
@@ -173,49 +162,40 @@ Example: [PLACEHOLDER: negative case]
 
 ---
 
-## Feature F-3: [PLACEHOLDER: third capability area — add more Feature sections as needed]
-
-### Rule R-4: Validate [PLACEHOLDER: condition]
-Example: [PLACEHOLDER: positive case]
-  Given [PLACEHOLDER: state]
-  When [PLACEHOLDER: action]
-  Then [PLACEHOLDER: result]
-
-Example: [PLACEHOLDER: negative case]
-  Given [PLACEHOLDER: state]
-  When [PLACEHOLDER: action]
-  Then [PLACEHOLDER: rejection]
-
----
-
 ## Assumptions
 
 | # | Assumption | Basis | Impact if wrong |
 |---|-----------|-------|-----------------|
-| A1 | [PLACEHOLDER: uncertainty about a user behaviour or platform capability] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact and fallback] |
-| A2 | [PLACEHOLDER: uncertainty about a third-party API or format] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact] |
+| A1 | [PLACEHOLDER: uncertainty about user behaviour or platform] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact and fallback] |
+| A2 | [PLACEHOLDER: uncertainty about a third-party dependency] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact] |
 `;
 }
 
-function buildDesignTemplate(projectTitle: string, featureIds: string[]): string {
-  const refs = featureIds.length > 0
-    ? featureIds.map((f, i) => `Feature ${f} ([PLACEHOLDER: feature name])`).join(", ")
-    : "Feature F-1 ([PLACEHOLDER: name]), Feature F-2 ([PLACEHOLDER: name]), Feature F-3 ([PLACEHOLDER: name])";
-
+function buildAdrTemplate(projectTitle: string, featureIds: string[]): string {
   const traceRows = featureIds.length > 0
-    ? featureIds.map((_, i) => {
-        const ruleN = `R-${i + 1}`;
-        return `| ${ruleN}  | [PLACEHOLDER: criterion description] | [PLACEHOLDER: component name — ComponentName → method()] |`;
-      }).join("\n")
+    ? featureIds.map((f, i) => `| R-${i + 1} | [PLACEHOLDER: criterion] | [PLACEHOLDER: component] |`).join("\n")
     : [
-        "| R-1  | [PLACEHOLDER: criterion] | [PLACEHOLDER: ComponentName → implementation detail] |",
-        "| R-2  | [PLACEHOLDER: criterion] | [PLACEHOLDER: ComponentName → implementation detail] |",
-        "| R-3  | [PLACEHOLDER: criterion] | [PLACEHOLDER: ComponentName → implementation detail] |",
+        "| R-1 | [PLACEHOLDER: criterion] | [PLACEHOLDER: component/module name] |",
+        "| R-2 | [PLACEHOLDER: criterion] | [PLACEHOLDER: component/module name] |",
       ].join("\n");
 
-  return `# Design
+  return `# ADR 001: [PLACEHOLDER: decision title — what was decided]
 
-References: ${refs}
+## Status
+
+Proposed
+
+## Context
+
+[PLACEHOLDER: the problem or constraint that forced a decision. Reference the triggering story
+or PRD feature. Use component/architectural vocabulary: service, module, API, layer, gateway.]
+
+References: ${featureIds.length > 0 ? featureIds.map((f) => `Feature ${f}`).join(", ") : "Feature F-1, Feature F-2"}
+
+## Decision
+
+[PLACEHOLDER: what was decided and why. Be explicit: "We will use X because Y. This satisfies
+constraint Z from requirements.md."]
 
 ## Requirement Traceability
 
@@ -223,45 +203,21 @@ References: ${refs}
 |------|-----------|--------------|
 ${traceRows}
 
-## Components
+## Consequences
 
-\`\`\`
-[PLACEHOLDER: ASCII diagram of main components and their relationships]
+[PLACEHOLDER: what becomes easier, what becomes harder, what is accepted as a trade-off.
+This section must acknowledge both positive and negative consequences.]
 
-┌────────────────────────────────────────────────────┐
-│              [PLACEHOLDER: top-level context]       │
-│                                                    │
-│  ┌──────────────────┐   ┌────────────────────────┐  │
-│  │ [Component Name] │ → │  [Component Name]      │  │
-│  │                  │   │                        │  │
-│  └──────────────────┘   └────────────────────────┘  │
-└────────────────────────────────────────────────────┘
-\`\`\`
+## Alternatives Considered
 
-## [PLACEHOLDER: Component 1 Name]
-
-[PLACEHOLDER: 2-3 sentences describing what this component does, what inputs it receives,
-what outputs it produces, and which requirements it satisfies. Use vocabulary like
-"module", "component", "API", "layer", "interface", "handler".]
-
-**Key design decisions:**
-- [PLACEHOLDER: why this approach was chosen over alternatives]
-- [PLACEHOLDER: a constraint or limitation the design accepts]
-
-## [PLACEHOLDER: Component 2 Name]
-
-[PLACEHOLDER: description of this component's responsibility, interface, and design decisions.]
-
-## [PLACEHOLDER: Component 3 Name — add more sections as needed]
-
-[PLACEHOLDER: description.]
+[PLACEHOLDER: what was NOT chosen and why. List at least one rejected alternative with a reason.]
 
 ## Assumptions
 
-| # | Assumption | Basis | Impact if wrong |
-|---|-----------|-------|-----------------|
-| A1 | [PLACEHOLDER: a technical assumption about platform, dependency, or performance] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact and fallback] |
-| A2 | [PLACEHOLDER: a second technical assumption] | [PLACEHOLDER: basis] | [PLACEHOLDER: impact] |
+| ID | Assumption | Basis | Status |
+|----|-----------|-------|--------|
+| A-001 | [PLACEHOLDER: technical assumption about platform or dependency] | [PLACEHOLDER: basis] | assumed |
+| A-002 | [PLACEHOLDER: a second assumption] | [PLACEHOLDER: basis] | assumed |
 `;
 }
 
@@ -296,73 +252,75 @@ function buildTasksTemplate(projectTitle: string): string {
 // ─── File guidance and violation data ────────────────────────────────────────
 
 const FILE_META: Record<string, { guidance: string[]; violations: string[] }> = {
-  "intent.md": {
+  "stories/": {
     guidance: [
-      "I-1: File must be named intent.md (also accepted: INTENT.md, proposal.md, WHY.md)",
-      "I-2: Must contain causal language — the checker looks for: 'because', 'in order to', 'so that', 'the problem is', 'forces', 'enables', 'requires', 'therefore'",
-      "I-3: Must contain constraint language — 'must', 'only', 'required', 'no', 'never', 'prohibited'",
-      "I-4: Open the Problem section with 'The problem is that...' — problem language must precede solution language",
-      "I-5: No PascalCase API names (IndexedDB, localStorage), no framework names, no snake_case_3_segment identifiers in Problem or Intent sections",
-      "I-6: ## Assumptions section must contain a table with columns: # | Assumption | Basis | Impact if wrong",
+      "S-1: ## Intent section must be non-empty and describe WHY the story exists",
+      "S-2: ## Acceptance Criteria must contain markdown checklist items (- [ ] ...)",
+      "S-3: ## Requirements must reference at least one R-N, F-N, P-N, or PRD section",
+      "S-4: ## ADR Required must be 'Yes' or 'No'",
+      "S-5: ## Assumptions section must be present",
+      "S-6: Intent section must contain causal language: 'because', 'in order to', 'so that', 'the problem is', 'we need', 'this enables'",
+      "S-7: Problem language must precede solution language in Intent",
+      "S-8: No framework names, PascalCase identifiers, or SQL in Intent section",
+      "S-9: Constraint language required: 'must', 'only', 'required', 'limit', 'constrain'",
     ],
     violations: [
-      "Opening with the solution instead of the problem ('Build an app that...' vs 'The problem is that...')",
-      "Using technology names like 'IndexedDB', 'localStorage', 'React', 'Express' in the Problem or Intent section",
-      "Assumptions written as prose instead of the four-column table",
-      "Missing causal connectors — the checker looks for specific signal words, not just general problem language",
+      "S-6: Opening Intent with solution language instead of problem ('Build a...' before 'The problem is...')",
+      "S-8: Naming specific frameworks (React, PostgreSQL) in the Intent section",
+      "S-1: Empty or missing ## Intent section",
+      "S-3: Requirements section has no traceable ID or link",
     ],
   },
-  "requirements.md": {
+  "prd/": {
     guidance: [
-      "R-2: Structure must be: ## Feature F-N → ### Rule R-N: Validate ... → Example: ... Given/When/Then",
-      "R-3: Every Rule heading must start with an imperative verb: 'Validate', 'Ensure', 'Reject', 'Require', 'Confirm'",
-      "R-5/R-6: Every Feature must have at least one Example with rejection/error/failure language",
-      "R-7: GIVEN steps must describe state, not actions — avoid: 'drops', 'clicks', 'selects', 'submits', 'types'; avoid the word 'type' (can be detected as action verb)",
-      "R-9: THEN steps must describe externally observable output — not 'the database contains', 'the flag is set', 'the variable is updated'",
-      "R-10: No PascalCase identifiers or specific API names in requirement text",
-      "End: ## Assumptions table with four columns",
+      "P-2: Structure must be: ## Feature F-N → ### Rule R-N: Validate ... → Example: ... Given/When/Then",
+      "P-3: Every Rule heading must start with an imperative verb: 'Validate', 'Ensure', 'Reject', 'Require'",
+      "P-5/P-6: Every Feature must have at least one negative/rejection Example",
+      "P-7: GIVEN steps describe state, not actions — 'a user with role X' not 'the user clicks'",
+      "P-9: THEN steps describe externally observable output — not internal state or database contents",
+      "P-10: No PascalCase identifiers or framework names in PRD text",
+      "P-11: Run compile_requirements write:true after editing prd/ files to regenerate requirements.md",
     ],
     violations: [
-      "R-6: No negative examples for one or more Features — every Feature needs at least one rejection/error Example",
-      "R-7: Action verbs in GIVEN ('the user drops a file', 'the user selects files') — describe the state instead",
-      "R-7: The word 'type' in GIVEN (as in 'MIME type') can be flagged — use 'format' or 'content format' instead",
-      "R-9: THEN describes internal state rather than observable output",
-      "R-10: Mentioning API names like 'DateTimeOriginal', 'localStorage' directly in requirement text",
+      "P-6: No negative examples for one or more Features",
+      "P-7: Action verbs in GIVEN steps",
+      "P-9: THEN describes internal state rather than observable output",
+      "P-11: Forgetting to run compile_requirements after adding/editing PRD files",
     ],
   },
-  "design.md": {
+  "adr/": {
     guidance: [
-      "D-1: File must be named design.md (also accepted: architecture.md, or an adr/ directory)",
-      "D-2: CRITICAL — First line after title must be: 'References: Feature F-1 (name), Feature F-2 (name), ...' listing ALL features",
-      "D-2: Must contain a '## Requirement Traceability' table with columns: Rule | Criterion | Satisfied By",
-      "D-3: Use component vocabulary — 'component', 'module', 'service', 'API', 'layer', 'interface', 'gateway', 'handler'",
-      "D-5: ## Assumptions table with four columns",
+      "A-1: Required sections: Status, Context, Decision, Consequences, Alternatives Considered, Assumptions",
+      "A-2: Status must be one of: Proposed, Accepted, Superseded, Deprecated",
+      "A-3: Reference the triggering story file or intent source",
+      "A-4: Must reference F-N and R-N IDs from requirements.md for traceability",
+      "A-5: Use component/architectural vocabulary: service, module, API, layer, gateway, pipeline",
     ],
     violations: [
-      "D-2: Missing the 'References: Feature F-N...' line — this is the most common first-run failure for design.md",
-      "D-2: Requirement Traceability table missing or not using Rule IDs from requirements.md",
-      "D-3: No component vocabulary in the design description",
+      "A-1: Missing required sections (Alternatives Considered is most commonly omitted)",
+      "A-4: ADR doesn't reference any F-N or R-N from requirements",
+      "A-5: No architectural vocabulary in the decision text",
     ],
   },
   "tasks.md": {
     guidance: [
       "T-1: File must contain at least one markdown checkbox: - [ ] task description",
-      "T-2: Every task must be ATOMIC — 'and' joining two verb phrases fails (e.g. 'Create X and configure Y')",
-      "T-3: Every task must trace to a Rule — include '(Rule: rule-name)' at the end of each task",
+      "T-2: Every task must be ATOMIC — 'and' joining two verb phrases fails",
+      "T-3: Every task must trace to a Rule or story — include '(Rule: R-N)' or '(Story: NNN)'",
       "T-4: Tasks must be specific — more than a few words; 'Set up project' is too vague",
       "T-5: ## Assumptions section (can be a short table — 2-3 rows is fine)",
     ],
     violations: [
       "T-2: Tasks like 'Add X and implement Y' — split into two separate tasks",
       "T-5: Missing ## Assumptions section — the most frequent G4 failure after T-2",
-      "T-3: Tasks that describe what to build but don't reference a Rule or Feature",
+      "T-3: Tasks that describe what to build but don't reference a Rule, Feature, or Story",
     ],
   },
 };
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-const SPEC_FILES = ["intent.md", "requirements.md", "design.md", "tasks.md"] as const;
+const SPEC_FILES = ["stories", "prd", "adr", "tasks.md"] as const;
 
 export function scaffoldSpec(
   projectRoot: string,
@@ -392,17 +350,23 @@ export function scaffoldSpec(
   const files: ScaffoldedFile[] = [];
   const notes: string[] = [];
 
-  for (const filename of SPEC_FILES) {
-    const filePath = join(absRoot, filename);
-    const exists = existsSync(filePath);
+  for (const entry of SPEC_FILES) {
+    const isDir = !entry.includes(".");
+    const metaKey = isDir ? `${entry}/` : entry;
+    const meta = FILE_META[metaKey] ?? { guidance: [], violations: [] };
 
+    // Determine starter filename and content
+    let starterFilename: string = entry;
     let content = "";
-    if (filename === "intent.md") {
-      content = buildIntentTemplate(projectTitle, sourceSummary);
-    } else if (filename === "requirements.md") {
-      content = buildRequirementsTemplate(projectTitle);
-    } else if (filename === "design.md") {
-      // Extract feature IDs from requirements if it already exists
+
+    if (entry === "stories") {
+      starterFilename = "001-initial-story.md";
+      content = buildStoryTemplate(projectTitle, sourceSummary);
+    } else if (entry === "prd") {
+      starterFilename = "001-initial-feature.md";
+      content = buildPrdTemplate(projectTitle);
+    } else if (entry === "adr") {
+      // Extract feature IDs from compiled requirements if already present
       const featureIds: string[] = [];
       const reqPath = join(absRoot, "requirements.md");
       if (existsSync(reqPath)) {
@@ -411,30 +375,51 @@ export function scaffoldSpec(
         for (const m of matches) featureIds.push(m[1]!);
       }
       if (featureIds.length === 0) featureIds.push("F-1", "F-2", "F-3");
-      content = buildDesignTemplate(projectTitle, featureIds);
-    } else if (filename === "tasks.md") {
+      starterFilename = "001-initial-decision.md";
+      content = buildAdrTemplate(projectTitle, featureIds);
+    } else {
+      // tasks.md (flat file)
       content = buildTasksTemplate(projectTitle);
     }
 
-    const meta = FILE_META[filename]!;
+    // Resolve paths and existence
+    let filePath: string;
+    let displayFilename: string;
+    let exists: boolean;
+
+    if (isDir) {
+      const dirPath = join(absRoot, entry);
+      filePath = join(dirPath, starterFilename);
+      displayFilename = `${entry}/${starterFilename}`;
+      // "exists" means the directory already has at least one .md file
+      try {
+        exists = existsSync(dirPath) && readdirSync(dirPath).some((f) => f.endsWith(".md"));
+      } catch {
+        exists = false;
+      }
+    } else {
+      filePath = join(absRoot, entry);
+      displayFilename = entry;
+      exists = existsSync(filePath);
+    }
 
     let written = false;
     if (!exists) {
       if (write) {
         try {
-          mkdirSync(absRoot, { recursive: true });
+          mkdirSync(dirname(filePath), { recursive: true });
           writeFileSync(filePath, content, "utf8");
           written = true;
         } catch (err) {
-          notes.push(`Could not write ${filename}: ${err instanceof Error ? err.message : String(err)}`);
+          notes.push(`Could not write ${displayFilename}: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
     } else {
-      skippedExisting.push(filename);
+      skippedExisting.push(displayFilename);
     }
 
     files.push({
-      filename,
+      filename: displayFilename,
       path: filePath,
       exists,
       written,
@@ -455,15 +440,15 @@ export function scaffoldSpec(
   }
 
   const workflow = [
-    "1. Review each template file and replace all [PLACEHOLDER: ...] markers with project-specific content",
-    "2. For intent.md: open with 'The problem is that...' and ensure your problem precedes any solution language",
-    "3. For requirements.md: add at least one negative (rejection/error) Example per Feature section",
-    "4. For design.md: fill in all Feature IDs in the References line and complete the Requirement Traceability table",
-    "5. For tasks.md: ensure each task has a '(Rule: ...)' reference and no task joins two work items with 'and'",
-    "6. Call run_all(path) to validate all five gates",
-    "7. Work through the 'next_steps' in the output — fix each violation then re-run",
-    "8. Gate G5 will BLOCK until test files exist — this is expected for a pre-implementation project",
-    "9. Add test files when you begin implementation, then run_all again to confirm G5 passes",
+    "1. Fill in stories/001-initial-story.md — open Intent with 'The problem is that...' (causal language required)",
+    "2. Fill in prd/001-initial-feature.md — add at least one negative Example per Feature/Rule",
+    "3. Run compile_requirements with write:true to generate requirements.md from prd/",
+    "4. Fill in adr/001-initial-decision.md — reference F-N / R-N IDs from requirements.md",
+    "5. Fill in tasks.md — each task must include '(Rule: R-N)' and contain no 'and'-joined work items",
+    "6. Call gate_check G1 through G4 iteratively — fix violations before proceeding to the next gate",
+    "7. Call run_all(path) to run all five gates in sequence",
+    "8. Gate G5 will BLOCK until test files exist — expected for pre-implementation projects",
+    "9. Add tests/, then run_all again to confirm G5 passes and all gates are green",
   ];
 
   return {
