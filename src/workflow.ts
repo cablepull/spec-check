@@ -167,29 +167,37 @@ function readdirSafe(root: string): string[] {
   try { return readdirSync(root); } catch { return []; }
 }
 
+// After an individual gate passes, redirect to run_all rather than chaining gate_check
+// one at a time. Phase-based suggestions use gate_check only when a specific artifact
+// is absent and later gates would BLOCK immediately anyway.
+function resolveMustCallNext(state: AgentState, phase: string, implementationTouched: boolean): string[] {
+  if (state.required_next_checks.length > 0) return state.required_next_checks;
+  if (state.last_completed_check === "G1" ||
+      state.last_completed_check === "G2" ||
+      state.last_completed_check === "G3" ||
+      state.last_completed_check === "G4") return ["run_all"];
+  if (state.last_completed_check === "G5") return ["metrics"];
+  if (state.last_completed_check === "run_all") return ["metrics"];
+  if (phase === "intent") return ["gate_check:G1"];
+  if (phase === "requirements") return ["gate_check:G2"];
+  if (phase === "design") return ["gate_check:G3"];
+  if (phase === "tasks") return ["gate_check:G4"];
+  if (phase === "executability") return ["gate_check:G5"];
+  if (implementationTouched) return ["metrics"];
+  return ["run_all"];
+}
+
+function resolveGuidanceNotes(blockedBy: string[], shouldCallMetrics: boolean): string[] {
+  if (blockedBy.length > 0) return ["Resolve reported open violations before advancing the workflow."];
+  if (shouldCallMetrics) return ["Metrics are due because implementation-oriented files changed or the workflow is in review."];
+  return ["Report state after substantive progress so the server can compute the next required action."];
+}
+
 export function computeWorkflowGuidance(projectRoot: string, state: AgentState): WorkflowGuidance {
   const phase = inferPhase(projectRoot, state);
   const blockedBy = [...state.open_violations];
   const implementationTouched = state.changed_paths.some((path) => /(^|\/)(src|lib|cmd)\//.test(path) || /\.(ts|tsx|js|jsx|py|go|rs|java)$/.test(path));
-  const mustCallNext = state.required_next_checks.length > 0
-    ? state.required_next_checks
-    // After an individual gate passes, use run_all for the remaining sweep rather than
-    // chaining gate_check one at a time — gate_check is for targeted re-checks after fixes.
-    : (state.last_completed_check === "G1" ||
-       state.last_completed_check === "G2" ||
-       state.last_completed_check === "G3" ||
-       state.last_completed_check === "G4") ? ["run_all"]
-    : state.last_completed_check === "G5" ? ["metrics"]
-    : state.last_completed_check === "run_all" ? ["metrics"]
-    // Phase-based: direct to the one gate that is currently blocking (later gates would
-    // BLOCK immediately, so run_all would give no additional information).
-    : phase === "intent" ? ["gate_check:G1"]
-    : phase === "requirements" ? ["gate_check:G2"]
-    : phase === "design" ? ["gate_check:G3"]
-    : phase === "tasks" ? ["gate_check:G4"]
-    : phase === "executability" ? ["gate_check:G5"]
-    : implementationTouched ? ["metrics"]
-    : ["run_all"];
+  const mustCallNext = resolveMustCallNext(state, phase, implementationTouched);
   const shouldCallMetrics = state.metrics_due ?? (implementationTouched || phase === "review");
   return {
     phase,
@@ -198,11 +206,7 @@ export function computeWorkflowGuidance(projectRoot: string, state: AgentState):
     must_report_state: state.status !== "completed",
     blocked: blockedBy.length > 0,
     blocked_by: blockedBy,
-    notes: blockedBy.length > 0
-      ? ["Resolve reported open violations before advancing the workflow."]
-      : shouldCallMetrics
-        ? ["Metrics are due because implementation-oriented files changed or the workflow is in review."]
-        : ["Report state after substantive progress so the server can compute the next required action."],
+    notes: resolveGuidanceNotes(blockedBy, shouldCallMetrics),
   };
 }
 

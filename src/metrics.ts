@@ -113,6 +113,7 @@ export interface RollupMetrics {
     compliance_score: number | null;
     gate_breakdown: Record<string, number | null>;
     avg_cc: number | null;
+    max_cc: number | null;
     latest_mutation_score: number | null;
     supersession_rate: number | null;
     unresolved_rca_count: number;
@@ -146,7 +147,7 @@ export interface RollupMetrics {
     runs: number;
     agents: number;
   }>;
-  top_projects_by_complexity: Array<{ project: string; avg_cc: number }>;
+  top_projects_by_complexity: Array<{ project: string; avg_cc: number; max_cc: number }>;
   lowest_mutation_projects: Array<{ project: string; mutation_score: number }>;
   highest_supersession_projects: Array<{ project: string; supersession_rate: number }>;
   unresolved_rcas: Array<{ project: string; unresolved: number }>;
@@ -414,9 +415,14 @@ function computeGatePassRates(gateRecords: GateRecord[]): ProjectMetrics["gate_p
   for (const gate of ["G1", "G2", "G3", "G4", "G5"] as const) {
     const records = gateRecords.filter((record) => record.gate === gate).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
     const history = records.map((record) => ({ timestamp: record.timestamp, pass_rate: gateStatusPass(record.gate_status) ? 1 : 0, run_batch_id: record.run_batch_id ?? null }));
+    // Use only full-sweep (run_all) records for value and trend so targeted gate_check
+    // re-runs don't inflate or deflate the aggregate. Fall back to all records when no
+    // run_all records exist yet (e.g. early history predating run_batch_id).
+    const sweepHistory = history.filter((item) => item.run_batch_id !== null);
+    const scoreHistory = sweepHistory.length > 0 ? sweepHistory : history;
     rates[gate] = {
-      value: history.length > 0 ? (history.filter((item) => item.pass_rate === 1).length / history.length) * 100 : null,
-      trend: trend(history.map((item) => item.pass_rate)),
+      value: scoreHistory.length > 0 ? (scoreHistory.filter((item) => item.pass_rate === 1).length / scoreHistory.length) * 100 : null,
+      trend: trend(scoreHistory.map((item) => item.pass_rate)),
       history,
     };
   }
@@ -1062,6 +1068,7 @@ function buildRollupProjectResults(
       compliance_score: Object.values(gateBreakdown).some((v) => v !== null) ? complianceScore : null,
       gate_breakdown: gateBreakdown,
       avg_cc: average(entry.ccs),
+      max_cc: entry.ccs.length > 0 ? Math.max(...entry.ccs) : null,
       latest_mutation_score: entry.mutationScores.length > 0 ? entry.mutationScores[entry.mutationScores.length - 1]! : null,
       supersession_rate: entry.supersessions,
       unresolved_rca_count: entry.unresolvedRcas,
@@ -1071,10 +1078,10 @@ function buildRollupProjectResults(
   return {
     projects,
     top_projects_by_complexity: [...projects]
-      .filter((item) => item.avg_cc !== null)
-      .sort((a, b) => (b.avg_cc ?? 0) - (a.avg_cc ?? 0))
+      .filter((item) => item.max_cc !== null)
+      .sort((a, b) => (b.max_cc ?? 0) - (a.max_cc ?? 0))
       .slice(0, 10)
-      .map((item) => ({ project: item.project, avg_cc: item.avg_cc! })),
+      .map((item) => ({ project: item.project, avg_cc: item.avg_cc!, max_cc: item.max_cc! })),
     lowest_mutation_projects: [...projects]
       .filter((item) => item.latest_mutation_score !== null)
       .sort((a, b) => (a.latest_mutation_score ?? 101) - (b.latest_mutation_score ?? 101))
@@ -1277,7 +1284,7 @@ function formatRollupMetricsText(result: RollupMetrics): string {
     `Adoption trend: ${result.adoption_trend}`,
     "─".repeat(60),
     "Top Projects:",
-    ...result.projects.slice(0, 10).map((item) => trunc(`  • ${item.project}: ${item.compliance_score === null ? "n/a" : item.compliance_score.toFixed(1)} ${miniBar(item.compliance_score)} cc=${item.avg_cc === null ? "n/a" : item.avg_cc.toFixed(2)} mutation=${item.latest_mutation_score === null ? "n/a" : item.latest_mutation_score.toFixed(1)} supersessions=${item.supersession_rate ?? 0}`, 120)),
+    ...result.projects.slice(0, 10).map((item) => trunc(`  • ${item.project}: ${item.compliance_score === null ? "n/a" : item.compliance_score.toFixed(1)} ${miniBar(item.compliance_score)} max_cc=${item.max_cc ?? "n/a"} avg_cc=${item.avg_cc === null ? "n/a" : item.avg_cc.toFixed(2)} mutation=${item.latest_mutation_score === null ? "n/a" : item.latest_mutation_score.toFixed(1)} supersessions=${item.supersession_rate ?? 0}`, 120)),
     "─".repeat(60),
     "Model Gate Rankings:",
     ...result.model_gate_rankings.slice(0, 10).map((item) => `  • ${trunc(item.model, 20)}: overall=${item.overall_pass_rate === null ? "n/a" : item.overall_pass_rate.toFixed(1)} runs=${item.runs}`),

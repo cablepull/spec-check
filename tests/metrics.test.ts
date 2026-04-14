@@ -440,6 +440,252 @@ describe("getRollupMetrics — cross-project", () => {
   });
 });
 
+// ── getProjectMetrics — run_batch_id gate scoring ────────────────────────────
+
+describe("getProjectMetrics — run_batch_id gate scoring", () => {
+  it("gate value and trend use only run_all records when any exist", async () => {
+    const dir = makeTmp("spec-check-batch-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    // Two run_all records: one PASS, one FAIL → 50% from sweeps
+    persistRecord(dir, dbPath, "gate-G1", "2025-10-01T10:00:00.000Z", {
+      schema_version: 2, check_type: "gate", project_path: dir,
+      timestamp: "2025-10-01T10:00:00.000Z",
+      gate: "G1", status: "PASS", gate_status: "PASS",
+      criteria: [], results: [], run_batch_id: "batch001",
+    });
+    persistRecord(dir, dbPath, "gate-G1", "2025-10-01T11:00:00.000Z", {
+      schema_version: 2, check_type: "gate", project_path: dir,
+      timestamp: "2025-10-01T11:00:00.000Z",
+      gate: "G1", status: "FAILING", gate_status: "FAILING",
+      criteria: [], results: [], run_batch_id: "batch002",
+    });
+    // Three gate_check records (all PASS) — must NOT inflate the pass rate
+    for (const ts of ["2025-10-01T11:05:00.000Z", "2025-10-01T11:10:00.000Z", "2025-10-01T11:15:00.000Z"]) {
+      persistRecord(dir, dbPath, "gate-G1", ts, {
+        schema_version: 2, check_type: "gate", project_path: dir,
+        timestamp: ts, gate: "G1", status: "PASS", gate_status: "PASS",
+        criteria: [], results: [],
+      });
+    }
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    // 1 of 2 sweep records pass → 50%, not 4 of 5 → 80%
+    expect(result.gate_pass_rates.G1.value).toBeCloseTo(50);
+    // history still contains all 5 records for heatmap/sparkline
+    expect(result.gate_pass_rates.G1.history).toHaveLength(5);
+  });
+
+  it("gate value uses all records when no run_batch_id records exist", async () => {
+    const dir = makeTmp("spec-check-nobatch-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    // Two legacy records (no run_batch_id) — one PASS, one FAIL
+    for (const [ts, status] of [
+      ["2025-10-02T08:00:00.000Z", "PASS"],
+      ["2025-10-02T09:00:00.000Z", "FAILING"],
+    ] as const) {
+      persistRecord(dir, dbPath, "gate-G2", ts, {
+        schema_version: 2, check_type: "gate", project_path: dir,
+        timestamp: ts, gate: "G2", status, gate_status: status,
+        criteria: [], results: [],
+      });
+    }
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    expect(result.gate_pass_rates.G2.value).toBeCloseTo(50);
+  });
+
+  it("run_batch_id is carried through to history entries", async () => {
+    const dir = makeTmp("spec-check-batchhist-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    persistRecord(dir, dbPath, "gate-G3", "2025-10-03T09:00:00.000Z", {
+      schema_version: 2, check_type: "gate", project_path: dir,
+      timestamp: "2025-10-03T09:00:00.000Z",
+      gate: "G3", status: "PASS", gate_status: "PASS",
+      criteria: [], results: [], run_batch_id: "batchXYZ",
+    });
+    persistRecord(dir, dbPath, "gate-G3", "2025-10-03T10:00:00.000Z", {
+      schema_version: 2, check_type: "gate", project_path: dir,
+      timestamp: "2025-10-03T10:00:00.000Z",
+      gate: "G3", status: "PASS", gate_status: "PASS",
+      criteria: [], results: [],
+    });
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    const history = result.gate_pass_rates.G3.history;
+    expect(history).toHaveLength(2);
+    const batchEntry = history.find((h) => h.run_batch_id === "batchXYZ");
+    const checkEntry = history.find((h) => h.run_batch_id === null);
+    expect(batchEntry).toBeDefined();
+    expect(checkEntry).toBeDefined();
+  });
+});
+
+// ── getProjectMetrics — complexity history fields ─────────────────────────────
+
+describe("getProjectMetrics — complexity history fields", () => {
+  it("history entries carry max_cc and violations per run", async () => {
+    const dir = makeTmp("spec-check-cchistory-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    // 4 functions: CCs of 4, 8, 12, 15 → max=15, violations(>10)=2
+    persistRecord(dir, dbPath, "complexity", "2025-11-01T10:00:00.000Z", {
+      schema_version: 2, check_type: "complexity", project_path: dir,
+      timestamp: "2025-11-01T10:00:00.000Z", status: "FAILING",
+      results: [
+        { cc: 4,  cognitive: null, length: 10, nesting: 1 },
+        { cc: 8,  cognitive: null, length: 20, nesting: 2 },
+        { cc: 12, cognitive: null, length: 30, nesting: 3 },
+        { cc: 15, cognitive: null, length: 40, nesting: 3 },
+      ],
+    });
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    expect(result.complexity.history).toHaveLength(1);
+    expect(result.complexity.history[0]?.max_cc).toBe(15);
+    expect(result.complexity.history[0]?.violations).toBe(2);
+  });
+
+  it("violation_count reflects the latest run", async () => {
+    const dir = makeTmp("spec-check-vccount-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    // Older run: 3 violations
+    persistRecord(dir, dbPath, "complexity", "2025-11-01T09:00:00.000Z", {
+      schema_version: 2, check_type: "complexity", project_path: dir,
+      timestamp: "2025-11-01T09:00:00.000Z", status: "FAILING",
+      results: [
+        { cc: 11, cognitive: null, length: 10, nesting: 1 },
+        { cc: 12, cognitive: null, length: 10, nesting: 1 },
+        { cc: 13, cognitive: null, length: 10, nesting: 1 },
+      ],
+    });
+    // Newer run: 1 violation (improvement)
+    persistRecord(dir, dbPath, "complexity", "2025-11-01T10:00:00.000Z", {
+      schema_version: 2, check_type: "complexity", project_path: dir,
+      timestamp: "2025-11-01T10:00:00.000Z", status: "FAILING",
+      results: [
+        { cc: 11, cognitive: null, length: 10, nesting: 1 },
+        { cc: 5,  cognitive: null, length: 10, nesting: 1 },
+      ],
+    });
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    // violation_count reflects the latest run (1 violation, not 3)
+    expect(result.complexity.violation_count).toBe(1);
+    expect(result.complexity.cc_max).toBe(11);
+  });
+
+  it("violation_count is 0 when all functions are within threshold", async () => {
+    const dir = makeTmp("spec-check-noviol-");
+    const dbPath = join(dir, "db");
+    const service = makeService(dir);
+
+    persistRecord(dir, dbPath, "complexity", "2025-11-02T10:00:00.000Z", {
+      schema_version: 2, check_type: "complexity", project_path: dir,
+      timestamp: "2025-11-02T10:00:00.000Z", status: "PASS",
+      results: [
+        { cc: 3, cognitive: null, length: 10, nesting: 1 },
+        { cc: 7, cognitive: null, length: 20, nesting: 2 },
+        { cc: 10, cognitive: null, length: 15, nesting: 1 },
+      ],
+    });
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getProjectMetrics(dir, service, config);
+
+    expect(result.complexity.violation_count).toBe(0);
+    expect(result.complexity.cc_max).toBe(10);
+  });
+});
+
+// ── getRollupMetrics — max_cc ranking ────────────────────────────────────────
+
+describe("getRollupMetrics — max_cc in projects and ranking", () => {
+  it("project entry carries max_cc from complexity records", async () => {
+    const dir = makeTmp("spec-check-rollup-cc-");
+    const dbPath = join(dir, "db");
+
+    // Complexity record for one project: CCs 3, 8, 14 → max=14, avg≈8.33
+    const filePath = join(dbPath, "org", "repo", "svc", "2025", "11", "01",
+      "abc12345_main_x_complexity_100000000.parquet");
+    writeRecord(filePath, {
+      schema_version: 2, check_type: "complexity",
+      project_path: join(dir, "repo"),
+      timestamp: "2025-11-01T10:00:00.000Z",
+      org: "org", repo: "repo", service: "svc",
+      llm_model: "claude-sonnet-4-5", llm_id: "x",
+      status: "FAILING",
+      results: [
+        { cc: 3,  cognitive: null, length: 10, nesting: 1 },
+        { cc: 8,  cognitive: null, length: 20, nesting: 2 },
+        { cc: 14, cognitive: null, length: 30, nesting: 3 },
+      ],
+    });
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+
+    expect(result.projects).toHaveLength(1);
+    expect(result.projects[0]?.max_cc).toBe(14);
+    expect(result.projects[0]?.avg_cc).toBeCloseTo(8.33, 1);
+  });
+
+  it("top_projects_by_complexity sorts by max_cc not avg_cc", async () => {
+    const dir = makeTmp("spec-check-rollup-ccrank-");
+    const dbPath = join(dir, "db");
+
+    // Project A: CCs 2, 3 → max=3, avg=2.5
+    // Project B: CCs 1, 20 → max=20, avg=10.5
+    // B should rank first (max_cc=20), even though avg is also higher
+    for (const [proj, ccs] of [["projA", [2, 3]], ["projB", [1, 20]]] as const) {
+      const fp = join(dbPath, "org", proj, "svc", "2025", "11", "01",
+        `abc12345_main_x_complexity_100000000.parquet`);
+      writeRecord(fp, {
+        schema_version: 2, check_type: "complexity",
+        project_path: join(dir, proj),
+        timestamp: "2025-11-01T10:00:00.000Z",
+        org: "org", repo: proj, service: "svc",
+        llm_model: "model", llm_id: "x",
+        status: "FAILING",
+        results: ccs.map((cc) => ({ cc, cognitive: null, length: 10, nesting: 1 })),
+      });
+    }
+
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+
+    expect(result.top_projects_by_complexity[0]?.max_cc).toBe(20);
+    expect(result.top_projects_by_complexity[0]?.project).toContain("projB");
+    expect(result.top_projects_by_complexity[1]?.max_cc).toBe(3);
+  });
+});
+
 // ── formatProjectMetrics ──────────────────────────────────────────────────────
 
 describe("formatProjectMetrics", () => {

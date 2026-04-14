@@ -549,15 +549,21 @@ function renderQualitySignalsSection(metrics: ProjectMetrics): string {
 }
 
 function renderTrendsSection(metrics: ProjectMetrics): string {
-  // Gate pass rate trends (multi-line)
-  const gateSeries: ChartSeries[] = Object.entries(metrics.gate_pass_rates).map(([gate, item]) => ({
-    label: gate,
-    color: GATE_COLORS[gate] ?? "#888",
-    data: item.history.map((h) => ({
-      ts: new Date(h.timestamp).getTime(),
-      value: h.pass_rate * 100,
-    })),
-  }));
+  // Gate pass rate trends — use only full-sweep (run_all) records so targeted
+  // gate_check re-runs don't create misleading intermediate data points.
+  // Falls back to all records for gates that have no run_all history yet.
+  const gateSeries: ChartSeries[] = Object.entries(metrics.gate_pass_rates).map(([gate, item]) => {
+    const sweepPoints = item.history.filter((h) => h.run_batch_id !== null);
+    const points = sweepPoints.length > 0 ? sweepPoints : item.history;
+    return {
+      label: gate,
+      color: GATE_COLORS[gate] ?? "#888",
+      data: points.map((h) => ({
+        ts: new Date(h.timestamp).getTime(),
+        value: h.pass_rate * 100,
+      })),
+    };
+  });
 
   const gateChart = svgLineChart(gateSeries, {
     width: 560,
@@ -626,7 +632,7 @@ function renderTrendsSection(metrics: ProjectMetrics): string {
       </div>
       <div class="subpanel" style="margin-bottom:1rem">
         <h3>Gate Pass Rates</h3>
-        <p class="muted small">All five gates over recorded runs. Y axis = pass rate %.</p>
+        <p class="muted small">Full-sweep (run_all) results per gate. Y axis = pass rate %. Targeted gate_check re-runs are excluded to avoid distorting the trend.</p>
         ${gateChart}
       </div>
       <div class="grid">
@@ -659,7 +665,7 @@ function renderRollupSection(rollup: RollupMetrics): string {
           item.compliance_score !== null ? [item.compliance_score] : [],
           { width: 80, height: 20, color: (item.compliance_score ?? 0) >= 80 ? "#2a7f62" : "#b42318" }
         )}</td>
-        <td>${num(item.avg_cc)}</td>
+        <td title="avg ${num(item.avg_cc)}">${num(item.max_cc, 0)}</td>
         <td>${pct(item.latest_mutation_score)}</td>
         <td>${item.unresolved_rca_count > 0 ? `<span class="badge fail">${item.unresolved_rca_count}</span>` : "·"}</td>
       </tr>
