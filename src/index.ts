@@ -753,6 +753,7 @@ async function handle_gate_check(ctx: ToolCtx): Promise<McpResponse> {
     results: gateResult.criteria,
     durationMs: gateResult.durationMs,
     timestamp: new Date(),
+    runBatchId: null,
   }));
 
   return toMcpContent(envelope(
@@ -778,6 +779,8 @@ async function handle_run_all(ctx: ToolCtx): Promise<McpResponse> {
   const formatted = formatRunResult(runResult, fmt);
 
   const paths = buildStoragePaths(absPath, service, localConfig.value.metrics.db_path);
+  const runBatchId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  const batchTimestamp = new Date();
   for (const gateResult of runResult.gates) {
     const filePath = buildFilePath(paths, localActor, `gate-${gateResult.gate}`);
     writeRecord(filePath, buildGateRecord({
@@ -793,7 +796,8 @@ async function handle_run_all(ctx: ToolCtx): Promise<McpResponse> {
       gateStatus: gateResult.status,
       results: gateResult.criteria,
       durationMs: gateResult.durationMs,
-      timestamp: new Date(),
+      timestamp: batchTimestamp,
+      runBatchId,
     }));
   }
 

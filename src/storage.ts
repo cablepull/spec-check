@@ -280,6 +280,7 @@ export function buildGateRecord(opts: {
   results: unknown[];
   durationMs: number;
   timestamp: Date;
+  runBatchId: string | null;
 }): Record<string, unknown> {
   return {
     schema_version: 2,
@@ -301,6 +302,7 @@ export function buildGateRecord(opts: {
     run_id: "run_id" in opts.llm ? opts.llm.run_id : undefined,
     gate: opts.gate,
     triggered_by: opts.triggeredBy,
+    run_batch_id: opts.runBatchId,
     status: opts.gateStatus,
     gate_status: opts.gateStatus,
     criteria: opts.results,

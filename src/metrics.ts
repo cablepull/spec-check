@@ -12,6 +12,7 @@ interface GateRecord {
   timestamp: string;
   gate: string;
   gate_status: string;
+  run_batch_id?: string | null;
   results?: unknown;
   criteria?: unknown;
 }
@@ -60,7 +61,7 @@ export interface ProjectMetrics {
   path: string;
   status: GateStatus;
   since: string | null;
-  gate_pass_rates: Record<string, { value: number | null; trend: TrendDirection; history: Array<{ timestamp: string; pass_rate: number }> }>;
+  gate_pass_rates: Record<string, { value: number | null; trend: TrendDirection; history: Array<{ timestamp: string; pass_rate: number; run_batch_id: string | null }> }>;
   top_violations: Array<{ id: string; count: number }>;
   spec_coverage: number | null;
   drift_rate: number | null;
@@ -412,7 +413,7 @@ function computeGatePassRates(gateRecords: GateRecord[]): ProjectMetrics["gate_p
   };
   for (const gate of ["G1", "G2", "G3", "G4", "G5"] as const) {
     const records = gateRecords.filter((record) => record.gate === gate).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    const history = records.map((record) => ({ timestamp: record.timestamp, pass_rate: gateStatusPass(record.gate_status) ? 1 : 0 }));
+    const history = records.map((record) => ({ timestamp: record.timestamp, pass_rate: gateStatusPass(record.gate_status) ? 1 : 0, run_batch_id: record.run_batch_id ?? null }));
     rates[gate] = {
       value: history.length > 0 ? (history.filter((item) => item.pass_rate === 1).length / history.length) * 100 : null,
       trend: trend(history.map((item) => item.pass_rate)),

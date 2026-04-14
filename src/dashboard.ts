@@ -228,29 +228,55 @@ function svgHBarChart(
   return `<svg width="100%" viewBox="0 0 ${width} ${totalH}" xmlns="http://www.w3.org/2000/svg" style="display:block">${bars}</svg>`;
 }
 
-/** Gate heatmap: rows = gates, columns = time. Color encodes pass rate. */
+/** Gate heatmap: rows = gates, columns = run iterations. Color encodes pass/fail. */
 function svgGateHeatmap(
-  gatePassRates: Record<string, { history: Array<{ timestamp: string; pass_rate: number }> }>
+  gatePassRates: Record<string, { history: Array<{ timestamp: string; pass_rate: number; run_batch_id: string | null }> }>
 ): string {
   const gates = ["G1", "G2", "G3", "G4", "G5"];
   const N = 16;
   const cellW = 30, cellH = 28, padL = 26, padT = 10, padB = 22;
 
-  // Collect timestamps
-  const entries: Array<{ ts: number; gate: string; rate: number }> = [];
+  // Each entry maps to an iteration key: run_batch_id when present (groups all gates
+  // from one run_all call), otherwise the raw timestamp string (gate_check records).
+  const entries: Array<{ iterKey: string; ts: number; gate: string; rate: number }> = [];
   for (const gate of gates) {
     for (const h of gatePassRates[gate]?.history ?? []) {
-      entries.push({ ts: new Date(h.timestamp).getTime(), gate, rate: h.pass_rate });
+      const ts = new Date(h.timestamp).getTime();
+      const iterKey = h.run_batch_id ?? h.timestamp;
+      entries.push({ iterKey, ts, gate, rate: h.pass_rate });
     }
   }
-  const allTs = [...new Set(entries.map((e) => e.ts))].sort((a, b) => a - b).slice(-N);
-  if (allTs.length === 0) {
+
+  // Build iteration list: unique keys sorted by their earliest timestamp, last N
+  const iterTs = new Map<string, number>();
+  for (const e of entries) {
+    const existing = iterTs.get(e.iterKey);
+    if (existing === undefined || e.ts < existing) iterTs.set(e.iterKey, e.ts);
+  }
+  const allIters = [...iterTs.entries()].sort((a, b) => a[1] - b[1]).slice(-N);
+
+  if (allIters.length === 0) {
     return `<svg width="100%" viewBox="0 0 300 60" xmlns="http://www.w3.org/2000/svg"><text x="8" y="34" fill="#6c655a" font-size="12" font-family="serif">No gate history yet</text></svg>`;
   }
 
-  const lookup = new Map<string, Map<number, number>>();
+  // Determine label format: show HH:MM when a calendar day has multiple iterations
+  const iterationsPerDay = new Map<string, number>();
+  for (const [, ts] of allIters) {
+    const day = new Date(ts).toDateString();
+    iterationsPerDay.set(day, (iterationsPerDay.get(day) ?? 0) + 1);
+  }
+  function iterLabel(ts: number): string {
+    const d = new Date(ts);
+    if ((iterationsPerDay.get(d.toDateString()) ?? 0) > 1) {
+      return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
+    }
+    return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  }
+
+  // Lookup: gate -> iterKey -> rate
+  const lookup = new Map<string, Map<string, number>>();
   for (const gate of gates) lookup.set(gate, new Map());
-  for (const e of entries) lookup.get(e.gate)?.set(e.ts, e.rate);
+  for (const e of entries) lookup.get(e.gate)?.set(e.iterKey, e.rate);
 
   function rateColor(rate: number | undefined): string {
     if (rate === undefined) return "#ece7db";
@@ -261,16 +287,15 @@ function svgGateHeatmap(
     return "#c1392b";
   }
 
-  const totalW = padL + allTs.length * cellW + 6;
-  const totalH = padT + gates.length * cellH + padB;
+  const totalW = padL + allIters.length * cellW + 6;
 
   const cells = gates.flatMap((gate, row) =>
-    allTs.map((ts, col) => {
-      const rate = lookup.get(gate)?.get(ts);
+    allIters.map(([iterKey, ts], col) => {
+      const rate = lookup.get(gate)?.get(iterKey);
       const x = padL + col * cellW;
       const y = padT + row * cellH;
       const tip = rate !== undefined
-        ? `${gate} ${pct(rate * 100)} — ${new Date(ts).toLocaleDateString()}`
+        ? `${gate} ${pct(rate * 100)} — ${iterLabel(ts)} ${new Date(ts).toLocaleDateString()}`
         : `${gate} — no data`;
       return `<rect x="${x}" y="${y}" width="${cellW - 2}" height="${cellH - 2}" fill="${rateColor(rate)}" rx="2"><title>${escapeHtml(tip)}</title></rect>`;
     })
@@ -281,12 +306,11 @@ function svgGateHeatmap(
     return `<text x="${padL - 4}" y="${y.toFixed(1)}" text-anchor="end" fill="#3a3730" font-size="10" font-weight="bold" font-family="serif">${gate}</text>`;
   });
 
-  const dateLabels = allTs.map((ts, col) => {
-    if (col % Math.max(1, Math.floor(allTs.length / 4)) !== 0 && col !== allTs.length - 1) return "";
+  const dateLabels = allIters.map(([, ts], col) => {
+    if (col % Math.max(1, Math.floor(allIters.length / 4)) !== 0 && col !== allIters.length - 1) return "";
     const x = padL + col * cellW + cellW / 2;
     const y = padT + gates.length * cellH + 14;
-    const date = new Date(ts).toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" fill="#a09488" font-size="8" font-family="ui-monospace,monospace">${escapeHtml(date)}</text>`;
+    return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" text-anchor="middle" fill="#a09488" font-size="8" font-family="ui-monospace,monospace">${escapeHtml(iterLabel(ts))}</text>`;
   });
 
   // Color scale legend
