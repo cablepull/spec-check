@@ -151,13 +151,46 @@ function mergeState(base: AgentState, patch: Partial<AgentState>): AgentState {
   };
 }
 
+const ORPHAN_PRD_NAMES = ["PRD.md", "prd.md", "SPEC.md", "spec.md"];
+
+function detectOrphanedPrd(root: string): string | null {
+  for (const name of ORPHAN_PRD_NAMES) {
+    const full = join(root, name);
+    if (existsSync(full)) return full;
+  }
+  const docsDir = join(root, "docs");
+  if (existsSync(docsDir)) {
+    try {
+      for (const entry of readdirSync(docsDir)) {
+        if (/^prd[-_.]|^PRD[-_.]/i.test(entry) && entry.endsWith(".md")) return join(docsDir, entry);
+      }
+    } catch {}
+  }
+  return null;
+}
+
 function inferPhase(projectRoot: string, state: AgentState): string {
   if (state.current_phase) return state.current_phase;
   if (state.status === "completed") return "completed";
   const root = resolve(projectRoot);
-  if (!existsSync(join(root, "intent.md"))) return "intent";
-  if (!existsSync(join(root, "requirements.md"))) return "requirements";
-  if (!existsSync(join(root, "design.md"))) return "design";
+
+  const storiesDir = join(root, "stories");
+  const hasStories = existsSync(storiesDir) && readdirSafe(storiesDir).some((f) => f.endsWith(".md"));
+  const prdDir = join(root, "prd");
+  const hasPrd = existsSync(prdDir) && readdirSafe(prdDir).some((f) => f.endsWith(".md"));
+
+  // Bootstrap: PRD found outside prd/ but directory structure not yet set up
+  if (!hasStories && !hasPrd && !existsSync(join(root, "intent.md")) && !existsSync(join(root, "requirements.md"))) {
+    if (detectOrphanedPrd(root)) return "bootstrap";
+  }
+
+  if (!hasStories && !existsSync(join(root, "intent.md"))) return "intent";
+  if (!hasPrd && !existsSync(join(root, "requirements.md"))) return "requirements";
+
+  const adrDir = join(root, "adr");
+  const hasAdr = existsSync(adrDir) && readdirSafe(adrDir).some((f) => f.endsWith(".md"));
+  if (!hasAdr && !existsSync(join(root, "design.md"))) return "design";
+
   if (!existsSync(join(root, "tasks.md"))) return "tasks";
   if (!existsSync(join(root, "tests")) && !readdirSafe(root).some((item) => /(?:^|\/)(test|tests)(?:\/|$)/.test(item))) return "executability";
   return "implementation";
@@ -178,6 +211,7 @@ function resolveMustCallNext(state: AgentState, phase: string, implementationTou
       state.last_completed_check === "G4") return ["run_all"];
   if (state.last_completed_check === "G5") return ["metrics"];
   if (state.last_completed_check === "run_all") return ["metrics"];
+  if (phase === "bootstrap") return ["scaffold_spec"];
   if (phase === "intent") return ["gate_check:G1"];
   if (phase === "requirements") return ["gate_check:G2"];
   if (phase === "design") return ["gate_check:G3"];

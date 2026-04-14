@@ -50,6 +50,7 @@ import { validateArtifacts } from "./artifacts.js";
 import { runReconciliation, formatReconciliationReport } from "./reconciliation.js";
 import { runEvidenceCheck, formatEvidenceReport } from "./evidence.js";
 import { scaffoldSpec, scaffoldToText } from "./scaffold.js";
+import { compileRequirements } from "./compile_requirements.js";
 import { buildSpecGuide, specGuideToText } from "./guide.js";
 import { actorFields, beginSession, computeWorkflowGuidance, latestAgentState, listAgentState, persistAgentState, type AgentStateReportResult } from "./workflow.js";
 import type { ToolArgs, Format, GateResult, ResolvedConfig, RunResult, ActorIdentity, WorkflowGuidance, AgentState } from "./types.js";
@@ -117,7 +118,7 @@ const TOOL_DEFINITIONS: Tool[] = [
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute or relative path to the project or spec directory" },
-        gate: { type: "string", enum: ["G1", "G2", "G3", "G4", "G5"], description: "Gate to check" },
+        gate: { type: "string", enum: ["G1", "G2", "G3", "G4", "G5", "G-RCA"], description: "Gate to check (G1=stories, G2=prd, G3=adr, G4=tasks, G5=tests, G-RCA=rca)" },
         llm: { type: "string", description: "LLM model identifier (e.g. claude-sonnet-4-5)" },
         format: { type: "string", enum: ["text", "json", "mermaid"], description: "Output format" },
       },
@@ -235,6 +236,23 @@ const TOOL_DEFINITIONS: Tool[] = [
         since: { type: "string", description: "Optional ISO date filter" },
         artifact_type: { type: "string", enum: ["story", "intent", "rca"], description: "Optional artifact type filter" },
         format: { type: "string", enum: ["text", "json"], description: "Output format" },
+      },
+      required: ["path"],
+    },
+  },
+  {
+    name: "compile_requirements",
+    description:
+      "Compile all prd/*.md files into a single requirements.md. " +
+      "Reads prd/ files in filename order and concatenates their Feature/Rule/Example content. " +
+      "The compiled requirements.md is required by G3 (ADR traceability) and G5 (test coverage). " +
+      "Run this after adding or editing any prd/ file. Idempotent — safe to run multiple times.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute or relative path to the project root" },
+        write: { type: "boolean", description: "If true, write the compiled requirements.md to disk (default: false — dry run)" },
+        format: { type: "string", enum: ["text", "json"], description: "Output format (default: text)" },
       },
       required: ["path"],
     },
@@ -1001,6 +1019,30 @@ async function handle_get_spec_guide(ctx: ToolCtx): Promise<McpResponse> {
   return toMcpContent(envelope(output, ctx.meta));
 }
 
+async function handle_compile_requirements(ctx: ToolCtx): Promise<McpResponse> {
+  if (!ctx.args.path) return toMcpContent(envelope(missingArg("path", "compile_requirements"), ctx.meta));
+  const absPath = resolve(String(ctx.args.path));
+  if (!existsSync(absPath)) return toMcpContent(envelope(pathNotFound(absPath), ctx.meta));
+  const write = Boolean(ctx.args.write);
+  const fmt = (ctx.args.format as "text" | "json" | undefined) ?? "text";
+  const result = compileRequirements(absPath, write);
+  if (fmt === "json") return toMcpContent(envelope(result, ctx.meta));
+  if (result.skippedReason) {
+    return toMcpContent(envelope(`compile_requirements skipped: ${result.skippedReason}`, ctx.meta));
+  }
+  const lines: string[] = [
+    `compile_requirements: ${result.written ? "written" : "dry-run (write:false)"}`,
+    `  PRD files: ${result.prdFiles.join(", ")}`,
+    `  Features: ${result.featuresCompiled}  Rules: ${result.rulesCompiled}`,
+    `  Output: ${result.outputPath}`,
+    "",
+    result.written
+      ? "requirements.md written. Run gate_check G2 and G3 to validate."
+      : "Dry run — pass write:true to write requirements.md to disk.",
+  ];
+  return toMcpContent(envelope(lines.join("\n"), ctx.meta));
+}
+
 async function handle_scaffold_spec(ctx: ToolCtx): Promise<McpResponse> {
   if (!ctx.args.path) return toMcpContent(envelope(missingArg("path", "scaffold_spec"), ctx.meta));
   const absPath = resolve(String(ctx.args.path));
@@ -1163,6 +1205,7 @@ const HANDLERS: Map<string, Handler> = new Map([
   ["list_assumptions", handle_list_assumptions],
   ["get_assumption_metrics", handle_get_assumption_metrics],
   ["get_supersession_history", handle_get_supersession_history],
+  ["compile_requirements", handle_compile_requirements],
   ["diff_check", handle_diff_check],
   ["complexity", handle_complexity],
   ["check_dependencies", handle_check_dependencies],

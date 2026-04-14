@@ -1,11 +1,9 @@
-// Gate 3 — Design Valid
-// Checks D-1 through D-5 against the design document.
-// Assumption: design document is named design.md, DESIGN.md, or similar under specPath.
-// Assumption: "references each requirement" is checked by scanning for Feature/Rule IDs
-//   (F-N, R-N) in the design text — proximity-based, not a full semantic parse.
-// Assumption: D-4 (negation of requirement constraints) is always WARNING, never VIOLATION
-//   per PRD § Criterion Severity: contradiction detection too noisy for hard-block.
-import { existsSync, readFileSync } from "fs";
+// Gate 3 — ADR Valid / Design Valid
+// Primary: validates adr/ directory (one ADR per architectural decision).
+// Aggregate checks: traceability to requirements.md, component language, no constraint negation.
+// Backwards compatible: if adr/ is absent but design.md exists, runs legacy D-* checks
+// with a deprecation WARNING.
+import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import type { GateResult, CriterionResult, ResolvedConfig } from "../types.js";
 import {
@@ -24,6 +22,28 @@ function findFile(specPath: string, names: string[]): string | null {
     if (existsSync(full)) return full;
   }
   return null;
+}
+
+function findAdrDir(specPath: string): string | null {
+  const dir = join(specPath, "adr");
+  if (!existsSync(dir)) return null;
+  try {
+    return readdirSync(dir).some((f) => f.endsWith(".md")) ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+function readAdrFiles(adrDir: string): string {
+  try {
+    return readdirSync(adrDir)
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .map((f) => { try { return readFileSync(join(adrDir, f), "utf-8"); } catch { return ""; } })
+      .join("\n\n");
+  } catch {
+    return "";
+  }
 }
 
 function readFile(path: string): string {
@@ -51,133 +71,132 @@ function extractConstraintTerms(reqText: string): string[] {
   return [...new Set(terms)].slice(0, 20);
 }
 
-export async function runGate3(specPath: string, config: ResolvedConfig): Promise<GateResult> {
-  const start = Date.now();
+function buildGateStatus(criteria: CriterionResult[]): GateResult["status"] {
+  if (criteria.some((c) => c.status === "BLOCK")) return "BLOCKED";
+  if (criteria.some((c) => c.status === "VIOLATION")) return "FAILING";
+  if (criteria.some((c) => c.status === "WARNING")) return "PASSING_WITH_WARNINGS";
+  return "PASS";
+}
+
+function runTraceabilityAndQualityChecks(
+  designText: string,
+  reqText: string,
+  config: ResolvedConfig,
+  idPrefix: "A" | "D"
+): CriterionResult[] {
   const criteria: CriterionResult[] = [];
 
-  // ── D-1: Design document exists ────────────────────────────────────────────
-  const designFile = findFile(specPath, DESIGN_NAMES);
-  if (!designFile) {
-    criteria.push({
-      id: "D-1",
-      status: "BLOCK",
-      detail: "No design document found. Expected design.md under the spec path.",
-      fix: "Create design.md describing the system architecture and how requirements are satisfied.",
-    });
-    return {
-      gate: "G3",
-      name: "Design Valid",
-      status: "BLOCKED",
-      criteria,
-      durationMs: Date.now() - start,
-    };
-  }
-
-  criteria.push({ id: "D-1", status: "PASS", detail: `Design document found: ${designFile}` });
-
-  const designText = readFile(designFile);
-
-  // Read requirements for cross-referencing
-  const reqFile = findFile(specPath, REQ_NAMES);
-  const reqText = reqFile ? readFile(reqFile) : "";
-
-  // ── D-2: Design references each feature/requirement ──────────────────────────
+  // Traceability: design/ADR text must reference F-N and R-N from requirements
   const reqFeatureIds = extractIds(reqText, /F-\d+/g);
   const reqRuleIds = extractIds(reqText, /R-\d+/g);
   const designFeatureIds = extractIds(designText, /F-\d+/g);
   const designRuleIds = extractIds(designText, /R-\d+/g);
-
   const missingFeatures = reqFeatureIds.filter((id) => !designFeatureIds.includes(id));
   const missingRules = reqRuleIds.filter((id) => !designRuleIds.includes(id));
+  const traceId = `${idPrefix}-4`;
 
   if (reqFeatureIds.length === 0 && reqRuleIds.length === 0) {
-    // No req IDs to cross-reference
-    criteria.push({ id: "D-2", status: "WARNING", detail: "No feature/rule IDs found in requirements to cross-reference with design." });
+    criteria.push({ id: traceId, status: "WARNING", detail: "No feature/rule IDs found in requirements to cross-reference with design/ADRs." });
   } else if (missingFeatures.length === 0 && missingRules.length === 0) {
-    criteria.push({
-      id: "D-2",
-      status: "PASS",
-      detail: `Design references all ${reqFeatureIds.length} feature(s) and ${reqRuleIds.length} rule(s).`,
-    });
+    criteria.push({ id: traceId, status: "PASS", detail: `ADRs reference all ${reqFeatureIds.length} feature(s) and ${reqRuleIds.length} rule(s).` });
   } else {
     const evidence: string[] = [];
-    if (missingFeatures.length > 0) evidence.push(`Features not in design: ${missingFeatures.join(", ")}`);
-    if (missingRules.length > 0) evidence.push(`Rules not in design: ${missingRules.slice(0, 10).join(", ")}`);
+    if (missingFeatures.length > 0) evidence.push(`Features not referenced in ADRs: ${missingFeatures.join(", ")}`);
+    if (missingRules.length > 0) evidence.push(`Rules not referenced in ADRs: ${missingRules.slice(0, 10).join(", ")}`);
     criteria.push({
-      id: "D-2",
-      status: "VIOLATION",
-      detail: `Design does not reference ${missingFeatures.length + missingRules.length} requirement ID(s).`,
+      id: traceId, status: "VIOLATION",
+      detail: `ADRs do not reference ${missingFeatures.length + missingRules.length} requirement ID(s).`,
       evidence,
-      fix: "Add explicit references to all Feature and Rule IDs in the design document.",
+      fix: "Add explicit references to all Feature and Rule IDs from requirements.md in the ADR files.",
     });
   }
 
-  // ── D-3: Component language present ─────────────────────────────────────────
+  // Component language
   const d3Threshold = getThreshold(config, "D-3");
   const componentResult = detectComponentLanguage(designText);
+  const compId = `${idPrefix}-5`;
   if (!componentResult.matched || componentResult.confidence < d3Threshold) {
     criteria.push({
-      id: "D-3",
-      status: "VIOLATION",
-      detail: "Design document lacks component/architectural language.",
-      evidence: componentResult.evidence,
-      confidence: componentResult.confidence,
+      id: compId, status: "VIOLATION",
+      detail: "ADRs lack component/architectural language.",
+      evidence: componentResult.evidence, confidence: componentResult.confidence,
       fix: "Describe system components: service, module, database, API, queue, pipeline, gateway, etc.",
     });
   } else {
-    criteria.push({
-      id: "D-3",
-      status: "PASS",
-      detail: "Component language detected.",
-      evidence: componentResult.evidence,
-      confidence: componentResult.confidence,
-    });
+    criteria.push({ id: compId, status: "PASS", detail: "Component language detected.", evidence: componentResult.evidence, confidence: componentResult.confidence });
   }
 
-  // ── D-4: Design does not negate requirement constraints (WARNING only) ────────
-  // D-4 is permanently WARNING; cannot be elevated to VIOLATION per PRD.
+  // Constraint negation (permanently WARNING)
   const constraintTerms = extractConstraintTerms(reqText);
+  const negId = `${idPrefix}-6`;
   if (constraintTerms.length > 0) {
     const negationResult = detectNegationProximity(designText, constraintTerms);
     if (negationResult.matched) {
       criteria.push({
-        id: "D-4",
-        status: "WARNING",   // permanently WARNING per PRD
-        detail: "Design may contradict requirement constraints (contradiction detection is heuristic).",
-        evidence: negationResult.evidence.slice(0, 3),
-        confidence: negationResult.confidence,
-        fix: "Review highlighted sentences — ensure design does not negate constraints stated in requirements.",
+        id: negId, status: "WARNING",
+        detail: "ADRs may contradict requirement constraints (heuristic detection).",
+        evidence: negationResult.evidence.slice(0, 3), confidence: negationResult.confidence,
+        fix: "Review highlighted sentences — ensure ADRs do not negate constraints from requirements.",
       });
     } else {
-      criteria.push({ id: "D-4", status: "PASS", detail: "No apparent contradictions between design and requirement constraints." });
+      criteria.push({ id: negId, status: "PASS", detail: "No apparent contradictions between ADRs and requirement constraints." });
     }
   } else {
-    criteria.push({ id: "D-4", status: "WARNING", detail: "No constraint terms extracted from requirements; D-4 contradiction check skipped." });
+    criteria.push({ id: negId, status: "WARNING", detail: "No constraint terms extracted from requirements; contradiction check skipped." });
   }
 
-  // ── D-5: Assumptions section present ─────────────────────────────────────────
-  const hasAssumptions = /^#+\s*assumptions?\b/im.test(designText);
-  if (!hasAssumptions) {
+  return criteria;
+}
+
+export async function runGate3(specPath: string, config: ResolvedConfig): Promise<GateResult> {
+  const start = Date.now();
+  const criteria: CriterionResult[] = [];
+
+  // Read requirements for cross-referencing (compiled requirements.md)
+  const reqFile = findFile(specPath, REQ_NAMES);
+  const reqText = reqFile ? readFile(reqFile) : "";
+
+  // ── Primary: adr/ directory ─────────────────────────────────────────────────
+  const adrDir = findAdrDir(specPath);
+  if (adrDir) {
+    const { validateArtifacts } = await import("../artifacts.js");
+    const summary = validateArtifacts(adrDir, false);
+    // Per-file structural criteria from validateAdr (A-1, A-2, A-3)
+    const perFileCriteria = summary.results.flatMap((r) => r.criteria);
+    criteria.push({ id: "A-1", status: "PASS", detail: `ADR directory found: ${adrDir}` });
+    criteria.push(...perFileCriteria);
+    // Aggregate traceability + quality checks over concatenated ADR text
+    const adrText = readAdrFiles(adrDir);
+    criteria.push(...runTraceabilityAndQualityChecks(adrText, reqText, config, "A"));
+    return { gate: "G3", name: "ADR Valid", status: buildGateStatus(criteria), criteria, durationMs: Date.now() - start };
+  }
+
+  // ── Backwards compat: legacy design.md ──────────────────────────────────────
+  const designFile = findFile(specPath, DESIGN_NAMES);
+  if (designFile) {
     criteria.push({
-      id: "D-5",
-      status: "VIOLATION",
-      detail: "Design document is missing an ## Assumptions section.",
-      fix: "Add '## Assumptions' and list every design decision inferred without explicit user instruction.",
+      id: "D-1",
+      status: "WARNING",
+      detail: `Legacy design.md found at ${designFile}. Migrate to adr/ directory (one file per decision).`,
+      fix: "Create an adr/ directory and split design.md into individual ADR files.",
     });
-  } else {
-    criteria.push({ id: "D-5", status: "PASS", detail: "Assumptions section present." });
+    const designText = readFile(designFile);
+    criteria.push(...runTraceabilityAndQualityChecks(designText, reqText, config, "D"));
+    const hasAssumptions = /^#+\s*assumptions?\b/im.test(designText);
+    criteria.push(
+      hasAssumptions
+        ? { id: "D-5", status: "PASS", detail: "Assumptions section present." }
+        : { id: "D-5", status: "VIOLATION", detail: "Design document is missing an ## Assumptions section.", fix: "Add '## Assumptions'." }
+    );
+    return { gate: "G3", name: "ADR Valid", status: buildGateStatus(criteria), criteria, durationMs: Date.now() - start };
   }
 
-  // ── Determine gate status ───────────────────────────────────────────────────
-  const hasBlock = criteria.some((c) => c.status === "BLOCK");
-  const hasViolation = criteria.some((c) => c.status === "VIOLATION");
-  const hasWarning = criteria.some((c) => c.status === "WARNING");
-
-  let status: GateResult["status"];
-  if (hasBlock) status = "BLOCKED";
-  else if (hasViolation) status = "FAILING";
-  else if (hasWarning) status = "PASSING_WITH_WARNINGS";
-  else status = "PASS";
-
-  return { gate: "G3", name: "Design Valid", status, criteria, durationMs: Date.now() - start };
+  // ── Neither found: BLOCK ─────────────────────────────────────────────────────
+  criteria.push({
+    id: "A-1",
+    status: "BLOCK",
+    detail: "No adr/ directory found. Expected adr/ with at least one ADR file.",
+    fix: "Create an adr/ directory and add ADR files documenting architectural decisions.",
+  });
+  return { gate: "G3", name: "ADR Valid", status: "BLOCKED", criteria, durationMs: Date.now() - start };
 }

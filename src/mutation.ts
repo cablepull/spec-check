@@ -174,8 +174,20 @@ function normaliseTokens(text: string): string[] {
 }
 
 function parseSpecHints(specPath: string): SpecHint[] {
-  const requirementsPath = join(specPath, "requirements.md");
-  const text = readText(requirementsPath);
+  // Try compiled requirements.md first; fall back to concatenating prd/*.md
+  let text = readText(join(specPath, "requirements.md"));
+  if (!text) {
+    const prdDir = join(specPath, "prd");
+    if (existsSync(prdDir)) {
+      try {
+        text = readdirSync(prdDir)
+          .filter((f) => f.endsWith(".md"))
+          .sort()
+          .map((f) => readText(join(prdDir, f)))
+          .join("\n\n");
+      } catch { text = ""; }
+    }
+  }
   const hints: SpecHint[] = [];
   const lines = text.split(/\r?\n/);
 

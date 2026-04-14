@@ -11,6 +11,7 @@ type ChangeCategory =
   | "design"
   | "tasks"
   | "stories"
+  | "prd"
   | "rca"
   | "adr"
   | "dependencies"
@@ -112,6 +113,7 @@ function categoryFor(file: string): ChangeCategory {
   if (normalized === "requirements.md") return "requirements";
   if (normalized === "design.md") return "design";
   if (normalized === "tasks.md") return "tasks";
+  if (normalized.startsWith("prd/") && !normalized.startsWith("prd/archive/")) return "prd";
   if (normalized.startsWith("stories/") && !normalized.startsWith("stories/archive/")) return "stories";
   if (normalized.startsWith("rca/") && !normalized.startsWith("rca/archive/")) return "rca";
   if (normalized.startsWith("adr/") && !normalized.startsWith("adr/archive/")) return "adr";
@@ -252,46 +254,62 @@ function addTraceabilityCriteria(
     criteria.push({ id: "DIFF-CODE-TESTS", status: "PASS", detail: "Code changes include matching test changes." });
   }
 
-  if (categories.stories.length > 0 && categories.requirements.length === 0) {
+  // PRD changes require compile_requirements to be run so requirements.md stays current
+  if (categories.prd.length > 0) {
+    criteria.push({
+      id: "DIFF-PRD-COMPILE",
+      status: "VIOLATION",
+      detail: `${categories.prd.length} PRD file(s) changed. requirements.md must be recompiled.`,
+      evidence: categories.prd,
+      fix: "Run compile_requirements with write:true to regenerate requirements.md from all prd/ files, then re-run G2 and G3.",
+    });
+  }
+
+  // Stories changed without corresponding PRD or requirement update
+  const reqOrPrdChanged = categories.requirements.length > 0 || categories.prd.length > 0;
+  if (categories.stories.length > 0 && !reqOrPrdChanged) {
     criteria.push({
       id: "DIFF-STORY-REQ",
       status: "VIOLATION",
-      detail: "Stories changed without corresponding requirement updates.",
+      detail: "Stories changed without corresponding PRD or requirement updates.",
       evidence: categories.stories,
-      fix: "Update requirements.md so story changes remain traceable to explicit requirements.",
+      fix: "Update the relevant prd/ file and run compile_requirements, or update requirements.md directly.",
     });
   } else if (categories.stories.length > 0) {
-    criteria.push({ id: "DIFF-STORY-REQ", status: "PASS", detail: "Story changes include requirement updates." });
+    criteria.push({ id: "DIFF-STORY-REQ", status: "PASS", detail: "Story changes include PRD/requirement updates." });
   }
 
-  if (categories.requirements.length > 0 && categories.design.length === 0) {
+  // PRD or requirements changed without ADR update
+  const reqChanged = categories.requirements.length > 0 || categories.prd.length > 0;
+  const designChanged = categories.design.length > 0 || categories.adr.length > 0;
+  if (reqChanged && !designChanged) {
     criteria.push({
       id: "DIFF-REQ-DESIGN",
       status: "WARNING",
-      detail: "Requirements changed without design changes; design may be stale.",
-      fix: "Review design.md and re-run design validation if requirement meaning changed.",
+      detail: "PRD/requirements changed without ADR changes; architecture decisions may be stale.",
+      fix: "Review adr/ and update or add ADR files if requirement changes introduce new architectural decisions.",
     });
-  } else if (categories.requirements.length > 0) {
-    criteria.push({ id: "DIFF-REQ-DESIGN", status: "PASS", detail: "Requirements changes include design updates." });
+  } else if (reqChanged) {
+    criteria.push({ id: "DIFF-REQ-DESIGN", status: "PASS", detail: "PRD/requirement changes include ADR updates." });
   }
 
-  if (categories.requirements.length > 0 && categories.tasks.length === 0) {
+  if (reqChanged && categories.tasks.length === 0) {
     criteria.push({
       id: "DIFF-REQ-TASKS",
       status: "WARNING",
-      detail: "Requirements changed without task updates; task coverage may be stale.",
-      fix: "Review tasks.md and re-run task coverage checks.",
+      detail: "PRD/requirements changed without task updates; task coverage may be stale.",
+      fix: "Review tasks.md and add tasks for any new features or rules introduced by this PRD change.",
     });
-  } else if (categories.requirements.length > 0) {
-    criteria.push({ id: "DIFF-REQ-TASKS", status: "PASS", detail: "Requirements changes include task updates." });
+  } else if (reqChanged) {
+    criteria.push({ id: "DIFF-REQ-TASKS", status: "PASS", detail: "PRD/requirement changes include task updates." });
   }
 
-  if (categories.intent.length > 0 && categories.requirements.length === 0) {
+  if (categories.intent.length > 0 && !reqOrPrdChanged) {
     criteria.push({
       id: "DIFF-INTENT-REQ",
       status: "WARNING",
       detail: "Intent changed without requirement updates.",
-      fix: "Review whether requirements.md should change to reflect the updated intent scope.",
+      fix: "Review whether the prd/ files should change to reflect the updated intent scope.",
     });
   } else if (categories.intent.length > 0) {
     criteria.push({ id: "DIFF-INTENT-REQ", status: "PASS", detail: "Intent changes include requirement updates." });
@@ -302,7 +320,7 @@ function collectAdrTriggers(files: DiffFileChange[]): { signals: string[]; evide
   const signals: string[] = [];
   const evidence: string[] = [];
   for (const file of files) {
-    if (!["design", "dependencies", "code", "requirements", "intent"].includes(file.category)) continue;
+    if (!["design", "adr", "dependencies", "code", "requirements", "prd", "intent"].includes(file.category)) continue;
     for (const line of file.addedLines) {
       for (const trigger of ADR_TRIGGER_PATTERNS) {
         if (trigger.pattern.test(line)) {
@@ -495,6 +513,7 @@ export async function runDiffCheck(
     design: [],
     tasks: [],
     stories: [],
+    prd: [],
     rca: [],
     adr: [],
     dependencies: [],

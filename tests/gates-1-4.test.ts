@@ -29,7 +29,7 @@ describe("gates 1 through 4", () => {
     const root = makeRoot();
     const result = await runGate1(root, config);
     expect(result.status).toBe("BLOCKED");
-    expect(result.criteria.find((item) => item.id === "I-1")?.status).toBe("BLOCK");
+    expect(result.criteria.find((item) => item.id === "S-1")?.status).toBe("BLOCK");
   });
 
   it("R-5 and R-6 enforce causal language and reject implementation details in intent", async () => {
@@ -97,8 +97,8 @@ describe("gates 1 through 4", () => {
     writeFileSync(join(root, "requirements.md"), "## Feature F-1: Accounts\n\n### Rule R-1: Validate Accounts must be durable\n", "utf-8");
     writeFileSync(join(root, "design.md"), "The module should not be durable.\n## Assumptions\nNone.\n", "utf-8");
     const result = await runGate3(root, config);
-    expect(result.criteria.find((item) => item.id === "D-2")?.status).toBe("VIOLATION");
-    expect(result.criteria.find((item) => item.id === "D-4")?.status).toBe("WARNING");
+    expect(result.criteria.find((item) => item.id === "D-4")?.status).toBe("VIOLATION");
+    expect(result.criteria.find((item) => item.id === "D-6")?.status).toBe("WARNING");
   });
 
   it("R-16 and R-17 fail Gate 4 on compound and untraceable tasks", async () => {

@@ -100,6 +100,7 @@ function artifactType(path: string): string {
   const file = basename(path).toLowerCase();
   if (file === "intent.md") return "intent";
   if (path.includes("/stories/")) return "story";
+  if (path.includes("/prd/")) return "prd";
   if (path.includes("/rca/")) return "rca";
   if (path.includes("/adr/")) return "adr";
   if (file === "design.md") return "design";

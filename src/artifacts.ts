@@ -1,6 +1,13 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "fs";
 import { basename, extname, join, resolve } from "path";
-import type { CriterionResult, GateResult, GateStatus } from "./types.js";
+import type { CriterionResult, GateResult, GateStatus, ResolvedConfig } from "./types.js";
+import {
+  detectCausalLanguage,
+  detectSolutionBeforeProblem,
+  detectImplementationLeak,
+  detectConstraintLanguage,
+} from "./nlp.js";
+import { getThreshold } from "./config.js";
 
 type ArtifactKind = "story" | "adr" | "rca";
 
@@ -77,7 +84,11 @@ function inferArtifactKind(path: string, text: string): ArtifactKind | null {
   return null;
 }
 
-function validateStory(file: string, text: string): GateResult & { file: string; artifactKind: "story" } {
+function validateStory(
+  file: string,
+  text: string,
+  config?: ResolvedConfig
+): GateResult & { file: string; artifactKind: "story" } {
   const start = Date.now();
   const sections = collectSections(text);
   const criteria: CriterionResult[] = [];
@@ -145,6 +156,72 @@ function validateStory(file: string, text: string): GateResult & { file: string;
           fix: "Add `## Assumptions`, even if the content states that none were needed.",
         }
   );
+
+  // ── S-6–S-9: NLP checks on Intent section content ──────────────────────────
+  // Only run when Intent section is non-empty (S-1 already blocks the empty case).
+  if (intent) {
+    const causalThreshold = config ? getThreshold(config, "I-2") : 0.4;
+    const causal = detectCausalLanguage(intent);
+    if (!causal.matched || causal.confidence < causalThreshold) {
+      criteria.push({
+        id: "S-6",
+        status: "VIOLATION",
+        detail: "Intent section lacks causal language explaining WHY this story is needed.",
+        evidence: [`${file}: Intent`],
+        confidence: causal.confidence,
+        fix: "Add causal language to Intent: 'because', 'in order to', 'the problem is', 'this enables', etc.",
+      });
+    } else {
+      criteria.push({ id: "S-6", status: "PASS", detail: "Causal language detected in Intent.", evidence: causal.evidence, confidence: causal.confidence });
+    }
+
+    const orderingThreshold = config ? getThreshold(config, "I-4") : 0.6;
+    const ordering = detectSolutionBeforeProblem(intent);
+    if (ordering.matched && ordering.confidence >= orderingThreshold) {
+      criteria.push({
+        id: "S-7",
+        status: "VIOLATION",
+        detail: "Solution language appears before problem language in Intent.",
+        evidence: ordering.evidence,
+        confidence: ordering.confidence,
+        fix: "Reorder Intent: describe the problem first, then the proposed solution.",
+      });
+    } else {
+      criteria.push({ id: "S-7", status: "PASS", detail: "Problem precedes solution in Intent.", evidence: ordering.evidence, confidence: ordering.confidence });
+    }
+
+    const implThreshold = config ? getThreshold(config, "I-5") : 0.6;
+    const implLeak = detectImplementationLeak(intent);
+    if (implLeak.matched && implLeak.confidence >= implThreshold) {
+      criteria.push({
+        id: "S-8",
+        status: "VIOLATION",
+        detail: "Intent section contains implementation-specific language.",
+        evidence: implLeak.evidence,
+        confidence: implLeak.confidence,
+        fix: "Remove framework names, PascalCase identifiers, SQL, and tool-specific references from Intent.",
+      });
+    } else if (implLeak.matched) {
+      criteria.push({ id: "S-8", status: "WARNING", detail: "Possible implementation detail in Intent (below threshold).", evidence: implLeak.evidence, confidence: implLeak.confidence });
+    } else {
+      criteria.push({ id: "S-8", status: "PASS", detail: "No implementation leak in Intent." });
+    }
+
+    const constraintThreshold = config ? getThreshold(config, "I-3") : 0.4;
+    const constraint = detectConstraintLanguage(text); // full story text, not just intent
+    if (!constraint.matched || constraint.confidence < constraintThreshold) {
+      criteria.push({
+        id: "S-9",
+        status: "VIOLATION",
+        detail: "Story lacks constraint language defining scope boundaries.",
+        evidence: [`${file}`],
+        confidence: constraint.confidence,
+        fix: "Add constraints: 'must', 'required', 'no more than', 'only', 'limit', etc.",
+      });
+    } else {
+      criteria.push({ id: "S-9", status: "PASS", detail: "Constraint language detected.", evidence: constraint.evidence, confidence: constraint.confidence });
+    }
+  }
 
   return {
     gate: "S",
@@ -323,7 +400,7 @@ function listCandidateFiles(dir: string, includeArchived = false): string[] {
   return results.sort();
 }
 
-function validateSingleFile(path: string): GateResult & { file: string; artifactKind: ArtifactKind } {
+function validateSingleFile(path: string, config?: ResolvedConfig): GateResult & { file: string; artifactKind: ArtifactKind } {
   const file = resolve(path);
   const text = readFile(file);
   const kind = inferArtifactKind(file, text);
@@ -347,12 +424,12 @@ function validateSingleFile(path: string): GateResult & { file: string; artifact
     };
   }
 
-  if (kind === "story") return validateStory(file, text);
+  if (kind === "story") return validateStory(file, text, config);
   if (kind === "adr") return validateAdr(file, text);
   return validateRca(file, text);
 }
 
-export function validateArtifacts(target: string, includeArchived = false): ArtifactValidationSummary {
+export function validateArtifacts(target: string, includeArchived = false, config?: ResolvedConfig): ArtifactValidationSummary {
   const start = Date.now();
   const resolvedTarget = resolve(target);
 
@@ -368,7 +445,7 @@ export function validateArtifacts(target: string, includeArchived = false): Arti
 
   const stat = statSync(resolvedTarget);
   const files = stat.isDirectory() ? listCandidateFiles(resolvedTarget, includeArchived) : [resolvedTarget];
-  const results = files.map((file) => validateSingleFile(file));
+  const results = files.map((file) => validateSingleFile(file, config));
 
   const kinds = [...new Set(results.map((result) => result.artifactKind))];
   const status = buildStatus(results.flatMap((result) => result.criteria));

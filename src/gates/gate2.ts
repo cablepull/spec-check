@@ -1,8 +1,9 @@
-// Gate 2 — Requirements Valid
-// Checks R-1 through R-10 against the requirements document(s).
-// Assumption: requirements file is named requirements.md, REQUIREMENTS.md, or
-//   similar under specPath. Stories directory (stories/*.md) is also scanned for
-//   Given/When/Then checks where applicable.
+// Gate 2 — PRD Valid / Requirements Valid
+// Primary: validates prd/ directory (one PRD per feature) and checks that compiled
+// requirements.md exists (P-11). Criteria P-1 through P-11 map to former R-1 through R-10
+// plus the new compiled-output check.
+// Backwards compatible: if prd/ is absent but requirements.md exists, runs legacy R-* checks
+// with a deprecation WARNING.
 import { existsSync, readFileSync, readdirSync } from "fs";
 import { join } from "path";
 import type { GateResult, CriterionResult, ResolvedConfig } from "../types.js";
@@ -24,6 +25,28 @@ function findFile(specPath: string, names: string[]): string | null {
     if (existsSync(full)) return full;
   }
   return null;
+}
+
+function findPrdDir(specPath: string): string | null {
+  const dir = join(specPath, "prd");
+  if (!existsSync(dir)) return null;
+  try {
+    return readdirSync(dir).some((f) => f.endsWith(".md")) ? dir : null;
+  } catch {
+    return null;
+  }
+}
+
+function readPrdFiles(prdDir: string): string {
+  try {
+    return readdirSync(prdDir)
+      .filter((f) => f.endsWith(".md"))
+      .sort()
+      .map((f) => { try { return readFileSync(join(prdDir, f), "utf-8"); } catch { return ""; } })
+      .join("\n\n");
+  } catch {
+    return "";
+  }
 }
 
 function readFile(path: string): string {
@@ -305,43 +328,93 @@ function assessImplementationLeakCriterion(text: string, threshold: number): Cri
   return { id: "R-10", status: "PASS", detail: "No implementation leak in requirements." };
 }
 
+function runPrdChecks(text: string, prdDir: string, config: ResolvedConfig): CriterionResult[] {
+  const criteria: CriterionResult[] = [];
+  const rules = extractRules(text);
+  const examples = extractExamples(text);
+  const allSteps = examples.flatMap((e) => e.steps);
+
+  // P-2 through P-10 are the same structural/BDD checks as the former R-2 through R-10,
+  // applied over the concatenated PRD content.
+  const h = assessHierarchy(text);
+  criteria.push({ ...h, id: "P-2" });
+  const imp = assessImperativeRules(rules, getThreshold(config, "R-3"));
+  criteria.push({ ...imp, id: "P-3" });
+  const bdd = assessBddStructure(text);
+  criteria.push({ ...bdd, id: "P-4" });
+  const neg = assessNegativeCoverage(examples, getThreshold(config, "R-5"));
+  criteria.push({ ...neg, id: "P-5" });
+  const fneg = assessFeatureNegativeCoverage(examples);
+  criteria.push({ ...fneg, id: "P-6" });
+  const given = assessGivenSteps(allSteps, getThreshold(config, "R-7"));
+  criteria.push({ ...given, id: "P-7" });
+  const compound = assessCompoundRules(rules, getThreshold(config, "R-8"));
+  criteria.push({ ...compound, id: "P-8" });
+  const then = assessThenSteps(allSteps, getThreshold(config, "R-9"));
+  criteria.push({ ...then, id: "P-9" });
+  const leak = assessImplementationLeakCriterion(text, getThreshold(config, "R-10"));
+  criteria.push({ ...leak, id: "P-10" });
+
+  // P-11: compiled requirements.md must exist so G3/G5 can cross-reference
+  const compiledExists = existsSync(join(prdDir, "..", "requirements.md"));
+  criteria.push(
+    compiledExists
+      ? { id: "P-11", status: "PASS", detail: "Compiled requirements.md is present." }
+      : {
+          id: "P-11",
+          status: "VIOLATION",
+          detail: "requirements.md has not been compiled from prd/ files yet.",
+          fix: "Run compile_requirements with write:true to generate requirements.md from prd/ sources.",
+        }
+  );
+
+  return criteria;
+}
+
 export async function runGate2(specPath: string, config: ResolvedConfig): Promise<GateResult> {
   const start = Date.now();
   const criteria: CriterionResult[] = [];
 
-  // ── R-1: Requirements file exists ──────────────────────────────────────────
-  const reqFile = findFile(specPath, REQ_NAMES);
-  if (!reqFile) {
-    criteria.push({
-      id: "R-1",
-      status: "BLOCK",
-      detail: "No requirements document found. Expected requirements.md under the spec path.",
-      fix: "Create requirements.md with Feature/Rule/Example structure.",
-    });
-    return {
-      gate: "G2",
-      name: "Requirements Valid",
-      status: "BLOCKED",
-      criteria,
-      durationMs: Date.now() - start,
-    };
+  // ── Primary: prd/ directory ─────────────────────────────────────────────────
+  const prdDir = findPrdDir(specPath);
+  if (prdDir) {
+    criteria.push({ id: "P-1", status: "PASS", detail: `PRD directory found: ${prdDir}` });
+    const text = readPrdFiles(prdDir);
+    criteria.push(...runPrdChecks(text, prdDir, config));
+    return { gate: "G2", name: "PRD Valid", status: buildGateStatus(criteria), criteria, durationMs: Date.now() - start };
   }
 
-  criteria.push({ id: "R-1", status: "PASS", detail: `Requirements document found: ${reqFile}` });
+  // ── Backwards compat: legacy requirements.md ────────────────────────────────
+  const reqFile = findFile(specPath, REQ_NAMES);
+  if (reqFile) {
+    criteria.push({
+      id: "R-1",
+      status: "WARNING",
+      detail: `Legacy requirements.md found at ${reqFile}. Migrate to prd/ directory (one file per feature).`,
+      fix: "Create a prd/ directory and split requirements.md into per-feature PRD files.",
+    });
+    const text = readFile(reqFile);
+    const rules = extractRules(text);
+    const examples = extractExamples(text);
+    const allSteps = examples.flatMap((e) => e.steps);
+    criteria.push(assessHierarchy(text));
+    criteria.push(assessImperativeRules(rules, getThreshold(config, "R-3")));
+    criteria.push(assessBddStructure(text));
+    criteria.push(assessNegativeCoverage(examples, getThreshold(config, "R-5")));
+    criteria.push(assessFeatureNegativeCoverage(examples));
+    criteria.push(assessGivenSteps(allSteps, getThreshold(config, "R-7")));
+    criteria.push(assessCompoundRules(rules, getThreshold(config, "R-8")));
+    criteria.push(assessThenSteps(allSteps, getThreshold(config, "R-9")));
+    criteria.push(assessImplementationLeakCriterion(text, getThreshold(config, "R-10")));
+    return { gate: "G2", name: "PRD Valid", status: buildGateStatus(criteria), criteria, durationMs: Date.now() - start };
+  }
 
-  const text = readFile(reqFile);
-  const rules = extractRules(text);
-  const examples = extractExamples(text);
-  const allSteps = examples.flatMap((e) => e.steps);
-  criteria.push(assessHierarchy(text));
-  criteria.push(assessImperativeRules(rules, getThreshold(config, "R-3")));
-  criteria.push(assessBddStructure(text));
-  criteria.push(assessNegativeCoverage(examples, getThreshold(config, "R-5")));
-  criteria.push(assessFeatureNegativeCoverage(examples));
-  criteria.push(assessGivenSteps(allSteps, getThreshold(config, "R-7")));
-  criteria.push(assessCompoundRules(rules, getThreshold(config, "R-8")));
-  criteria.push(assessThenSteps(allSteps, getThreshold(config, "R-9")));
-  criteria.push(assessImplementationLeakCriterion(text, getThreshold(config, "R-10")));
-
-  return { gate: "G2", name: "Requirements Valid", status: buildGateStatus(criteria), criteria, durationMs: Date.now() - start };
+  // ── Neither found: BLOCK ─────────────────────────────────────────────────────
+  criteria.push({
+    id: "P-1",
+    status: "BLOCK",
+    detail: "No prd/ directory found. Expected prd/ with at least one PRD file.",
+    fix: "Create a prd/ directory and add PRD files using Feature/Rule/Example structure.",
+  });
+  return { gate: "G2", name: "PRD Valid", status: "BLOCKED", criteria, durationMs: Date.now() - start };
 }
