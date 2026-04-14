@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>spec-check — Spec-driven development enforcement for LLMs</title>
+  <style>
+    :root {
+      --bg:       #faf8f4;
+      --surface:  #f2ede4;
+      --border:   #ddd5c8;
+      --text:     #2c2820;
+      --muted:    #7a6f64;
+      --accent:   #005f73;
+      --accent2:  #0a9396;
+      --pass:     #2a7f62;
+      --fail:     #c1392b;
+      --warn:     #9a6700;
+      --code-bg:  #1e1b18;
+      --code-fg:  #e8e0d5;
+      --radius:   6px;
+      --max:      960px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 17px;
+      line-height: 1.7;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Nav ── */
+    nav {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 0 2rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 52px;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    nav .brand {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 1rem;
+      color: #e8e0d5;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+    nav .brand span { color: var(--accent2); }
+    nav ul {
+      list-style: none;
+      display: flex;
+      gap: 1.75rem;
+    }
+    nav ul a {
+      color: #b0a898;
+      font-family: ui-monospace, monospace;
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    nav ul a:hover { color: #e8e0d5; text-decoration: none; }
+
+    /* ── Hero ── */
+    .hero {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 5rem 2rem 4rem;
+      text-align: center;
+      border-bottom: 3px solid var(--accent);
+    }
+    .hero h1 {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: clamp(2rem, 5vw, 3.2rem);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      margin-bottom: 1rem;
+    }
+    .hero h1 span { color: var(--accent2); }
+    .hero .tagline {
+      font-size: 1.2rem;
+      color: #b0a898;
+      max-width: 600px;
+      margin: 0 auto 2.5rem;
+      font-style: italic;
+    }
+    .hero-pills {
+      display: flex;
+      gap: 0.75rem;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-bottom: 2.5rem;
+    }
+    .pill {
+      background: #2c2820;
+      border: 1px solid #3d3530;
+      color: #b0a898;
+      padding: 0.3rem 0.9rem;
+      border-radius: 999px;
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+    }
+    .cta-row {
+      display: flex;
+      gap: 1rem;
+      justify-content: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.6rem 1.6rem;
+      border-radius: var(--radius);
+      font-family: ui-monospace, monospace;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity 0.15s;
+    }
+    .btn:hover { opacity: 0.85; text-decoration: none; }
+    .btn-primary { background: var(--accent2); color: #fff; }
+    .btn-secondary { background: #2c2820; border: 1px solid #3d3530; color: #e8e0d5; }
+
+    /* ── Layout ── */
+    .container { max-width: var(--max); margin: 0 auto; padding: 0 2rem; }
+    section { padding: 4rem 0; }
+    section + section { border-top: 1px solid var(--border); }
+
+    h2 {
+      font-size: 1.7rem;
+      font-weight: 700;
+      margin-bottom: 1rem;
+      color: var(--text);
+    }
+    h3 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      margin-bottom: 0.5rem;
+    }
+    p { margin-bottom: 1rem; color: var(--text); }
+    p:last-child { margin-bottom: 0; }
+
+    /* ── Code blocks ── */
+    pre {
+      background: var(--code-bg);
+      color: var(--code-fg);
+      padding: 1.25rem 1.5rem;
+      border-radius: var(--radius);
+      overflow-x: auto;
+      font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+      font-size: 0.84rem;
+      line-height: 1.6;
+      margin: 1rem 0;
+    }
+    code {
+      font-family: ui-monospace, "Cascadia Code", monospace;
+      font-size: 0.875em;
+      background: var(--surface);
+      padding: 0.15em 0.4em;
+      border-radius: 3px;
+      color: var(--accent);
+    }
+    pre code { background: none; padding: 0; color: inherit; font-size: inherit; }
+
+    .kw  { color: #79b8ff; }
+    .str { color: #9ecbff; }
+    .cmt { color: #6a737d; font-style: italic; }
+    .key { color: #b392f0; }
+    .val { color: #f97583; }
+    .num { color: #f8c555; }
+    .ok  { color: #85e89d; }
+    .err { color: #f97583; }
+    .dim { color: #6a737d; }
+
+    /* ── Gate cards ── */
+    .gates-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    .gate-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem 1rem;
+      text-align: center;
+    }
+    .gate-card .gate-id {
+      font-family: ui-monospace, monospace;
+      font-size: 1.5rem;
+      font-weight: 800;
+      color: var(--accent);
+      margin-bottom: 0.4rem;
+    }
+    .gate-card .gate-name {
+      font-weight: 700;
+      font-size: 0.9rem;
+      margin-bottom: 0.4rem;
+    }
+    .gate-card .gate-file {
+      font-family: ui-monospace, monospace;
+      font-size: 0.78rem;
+      color: var(--muted);
+    }
+
+    /* ── Status badges ── */
+    .badge {
+      display: inline-block;
+      padding: 0.2em 0.65em;
+      border-radius: 4px;
+      font-family: ui-monospace, monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+    }
+    .badge-pass    { background: #d1fadf; color: var(--pass); }
+    .badge-block   { background: #fee2e2; color: var(--fail); }
+    .badge-warn    { background: #fef3c7; color: var(--warn); }
+    .badge-violate { background: #fee2e2; color: var(--fail); border: 1px solid #fca5a5; }
+
+    /* ── Tools table ── */
+    .tools-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+      margin-top: 1.5rem;
+    }
+    @media (max-width: 640px) { .tools-grid { grid-template-columns: 1fr; } }
+    .tool-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.9rem 1rem;
+    }
+    .tool-item code {
+      display: block;
+      font-size: 0.82rem;
+      margin-bottom: 0.3rem;
+      color: var(--accent);
+      background: none;
+      padding: 0;
+    }
+    .tool-item p {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin: 0;
+      line-height: 1.45;
+    }
+
+    /* ── Config table ── */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+    th {
+      text-align: left;
+      padding: 0.5rem 0.75rem;
+      background: var(--surface);
+      border-bottom: 2px solid var(--border);
+      font-family: ui-monospace, monospace;
+      font-size: 0.8rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+    td {
+      padding: 0.55rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    td:first-child { font-family: ui-monospace, monospace; font-size: 0.85rem; color: var(--accent); }
+    tr:last-child td { border-bottom: none; }
+
+    /* ── Steps ── */
+    .steps { counter-reset: step; margin-top: 1.5rem; }
+    .step {
+      display: flex;
+      gap: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .step-num {
+      counter-increment: step;
+      flex-shrink: 0;
+      width: 2rem;
+      height: 2rem;
+      background: var(--accent);
+      color: #fff;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: ui-monospace, monospace;
+      font-size: 0.85rem;
+      font-weight: 700;
+      margin-top: 0.15rem;
+    }
+    .step-body h3 { margin-bottom: 0.4rem; }
+
+    /* ── Two-col ── */
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2rem;
+      margin-top: 1.5rem;
+    }
+    @media (max-width: 680px) { .two-col { grid-template-columns: 1fr; } }
+
+    /* ── Metrics section ── */
+    .metrics-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-top: 1.5rem;
+    }
+    .metric-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+    }
+    .metric-card .metric-label {
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-family: ui-monospace, monospace;
+      margin-bottom: 0.4rem;
+    }
+    .metric-card .metric-value {
+      font-size: 2rem;
+      font-weight: 800;
+      color: var(--accent);
+      font-family: ui-monospace, monospace;
+      line-height: 1;
+    }
+    .metric-card .metric-desc {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 0.4rem;
+    }
+
+    /* ── Footer ── */
+    footer {
+      background: var(--code-bg);
+      color: #6a737d;
+      text-align: center;
+      padding: 2rem;
+      font-size: 0.85rem;
+      font-family: ui-monospace, monospace;
+    }
+    footer a { color: #b0a898; }
+
+    /* ── Callout ── */
+    .callout {
+      background: var(--surface);
+      border-left: 3px solid var(--accent);
+      padding: 1rem 1.25rem;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 1rem 0;
+      font-size: 0.92rem;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Navigation ── -->
+<nav>
+  <div class="brand"><span>spec</span>-check</div>
+  <ul>
+    <li><a href="#how-it-works">How it works</a></li>
+    <li><a href="#gates">Gates</a></li>
+    <li><a href="#tools">Tools</a></li>
+    <li><a href="#metrics">Metrics</a></li>
+    <li><a href="#config">Config</a></li>
+    <li><a href="#quickstart">Get started</a></li>
+  </ul>
+</nav>
+
+<!-- ── Hero ── -->
+<header class="hero">
+  <h1><span>spec</span>-check</h1>
+  <p class="tagline">Spec-driven development enforcement for LLMs and humans alike — runs entirely offline via MCP.</p>
+  <div class="hero-pills">
+    <span class="pill">MCP server</span>
+    <span class="pill">TypeScript</span>
+    <span class="pill">DuckDB · Parquet</span>
+    <span class="pill">26 tools</span>
+    <span class="pill">offline · no telemetry</span>
+  </div>
+  <div class="cta-row">
+    <a class="btn btn-primary" href="#quickstart">Get started</a>
+    <a class="btn btn-secondary" href="https://github.com/tenguns/spec-check">GitHub</a>
+  </div>
+</header>
+
+<!-- ── Problem / Why ── -->
+<section id="why">
+  <div class="container">
+    <h2>The problem</h2>
+    <div class="two-col">
+      <div>
+        <p>LLMs are powerful but structurally inconsistent. Given the same task twice, a model may produce a thorough specification one time and skip it entirely the next. Without enforcement, spec-driven methodology becomes aspirational rather than operational.</p>
+        <p>The discipline degrades under time pressure. Codebases accumulate undocumented decisions, untracked bugs, and architecture nobody can explain.</p>
+      </div>
+      <div>
+        <p>spec-check acts as a local gatekeeper. An LLM calls it, receives a deterministic verdict with specific violations, and must satisfy those violations before advancing. The verdict is structured JSON — the LLM can self-correct autonomously.</p>
+        <p>Every result is persisted locally as Parquet. Compliance trends become visible and improvable over time — per project and across all projects.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How it works ── -->
+<section id="how-it-works">
+  <div class="container">
+    <h2>How it works</h2>
+    <p>Projects are expected to maintain five spec artifacts. spec-check verifies them through a sequence of gates. Each gate returns structured pass/fail criteria with evidence and fix instructions.</p>
+
+    <pre><span class="cmt"># Agent workflow (typical)</span>
+
+<span class="ok">begin_session</span>      <span class="cmt">→  returns phase, obligations, and must_call_next</span>
+<span class="ok">run_all</span>            <span class="cmt">→  G1 → G2 → G3 → G4 → G5, stops at first BLOCK</span>
+<span class="cmt">                       fix violations, then:</span>
+<span class="ok">gate_check:G2</span>      <span class="cmt">→  targeted recheck after fixing a single gate</span>
+<span class="ok">run_all</span>            <span class="cmt">→  full sweep once individual gate passes</span>
+<span class="ok">diff_check</span>         <span class="cmt">→  analyse git diff, identify re-run requirements</span>
+<span class="ok">complexity</span>         <span class="cmt">→  CC, cognitive, nesting, length analysis</span>
+<span class="ok">check_mutation_score</span> <span class="cmt">→  mutation testing with trend detection</span>
+<span class="ok">metrics</span>            <span class="cmt">→  query per-project compliance history</span>
+<span class="ok">close_session</span>      <span class="cmt">→  persist final state</span></pre>
+
+    <div class="callout">
+      After any passing individual gate, <code>must_call_next</code> always resolves to <code>run_all</code> — not a chain of individual checks. Targeted <code>gate_check</code> calls are for fixing a known single violation, not for initial sweeps.
+    </div>
+
+    <h3 style="margin-top:2rem">Response structure</h3>
+    <p>Every tool returns the same envelope:</p>
+    <pre>{
+  <span class="key">"status"</span>: <span class="str">"PASS"</span> <span class="dim">| "BLOCKED" | "FAILING" | "PASSING_WITH_WARNINGS"</span>,
+  <span class="key">"criteria"</span>: [
+    {
+      <span class="key">"id"</span>: <span class="str">"R-6"</span>,
+      <span class="key">"status"</span>: <span class="str">"VIOLATION"</span>,
+      <span class="key">"detail"</span>: <span class="str">"requirements.md has no numbered rules in any Feature section."</span>,
+      <span class="key">"evidence"</span>: [<span class="str">"F-1: Missing Rule R-n pattern"</span>],
+      <span class="key">"fix"</span>: <span class="str">"Add ### Rule R-N: Validate ... lines under each Feature heading."</span>
+    }
+  ],
+  <span class="key">"workflow"</span>: {
+    <span class="key">"must_call_next"</span>: [<span class="str">"run_all"</span>],
+    <span class="key">"should_call_metrics"</span>: <span class="val">false</span>,
+    <span class="key">"blocked"</span>: <span class="val">false</span>
+  }
+}</pre>
+  </div>
+</section>
+
+<!-- ── Gates ── -->
+<section id="gates">
+  <div class="container">
+    <h2>The five gates</h2>
+    <p>Gates run sequentially. A BLOCKED result on any gate stops the chain — later gates depend on earlier artifacts existing.</p>
+
+    <div class="gates-grid">
+      <div class="gate-card">
+        <div class="gate-id">G1</div>
+        <div class="gate-name">Intent Valid</div>
+        <div class="gate-file">intent.md</div>
+      </div>
+      <div class="gate-card">
+        <div class="gate-id">G2</div>
+        <div class="gate-name">Requirements Valid</div>
+        <div class="gate-file">requirements.md</div>
+      </div>
+      <div class="gate-card">
+        <div class="gate-id">G3</div>
+        <div class="gate-name">Design Valid</div>
+        <div class="gate-file">design.md</div>
+      </div>
+      <div class="gate-card">
+        <div class="gate-id">G4</div>
+        <div class="gate-name">Tasks Valid</div>
+        <div class="gate-file">tasks.md</div>
+      </div>
+      <div class="gate-card">
+        <div class="gate-id">G5</div>
+        <div class="gate-name">Executability Valid</div>
+        <div class="gate-file">tests/ or test/</div>
+      </div>
+    </div>
+
+    <div style="margin-top: 2rem;">
+      <h3>Gate severity levels</h3>
+      <table>
+        <thead>
+          <tr><th>Status</th><th>Meaning</th><th>Gate outcome</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><span class="badge badge-block">BLOCK</span></td><td>Required artifact missing or structurally invalid</td><td>Gate halts; no further gates run</td></tr>
+          <tr><td><span class="badge badge-violate">VIOLATION</span></td><td>Artifact present but a specific rule failed</td><td>Gate FAILING; must be fixed</td></tr>
+          <tr><td><span class="badge badge-warn">WARNING</span></td><td>Degraded signal — may pass but should be addressed</td><td>PASSING_WITH_WARNINGS</td></tr>
+          <tr><td><span class="badge badge-pass">PASS</span></td><td>All criteria met</td><td>Gate advances</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="margin-top:2rem">
+      <h3>Spec artifact structure</h3>
+      <p>Gate checks look for these patterns in each artifact:</p>
+      <div class="two-col">
+        <div>
+          <pre><span class="cmt"># intent.md</span>
+<span class="kw">## Problem</span>       <span class="dim">← required section</span>
+<span class="kw">## Intent</span>        <span class="dim">← required section</span>
+<span class="kw">## Assumptions</span>   <span class="dim">← required section</span>
+<span class="dim">| ID | Statement | ... |</span></pre>
+          <pre><span class="cmt"># requirements.md</span>
+<span class="kw">## Feature F-1: Name</span>
+<span class="kw">### Rule R-1: Validate ...</span>
+<span class="dim">- Given / When / Then examples</span>
+<span class="kw">### Rule R-2: Validate ...</span></pre>
+        </div>
+        <div>
+          <pre><span class="cmt"># design.md</span>
+<span class="kw">## Component Architecture</span>
+<span class="kw">## Data Flow</span>
+<span class="kw">## Key Design Decisions</span>
+<span class="kw">## Assumptions</span></pre>
+          <pre><span class="cmt"># tasks.md</span>
+<span class="kw">## Story S-001: Name</span>
+<span class="dim">- [ ] Task with status</span>
+<span class="dim">- [x] Completed task</span>
+<span class="kw">## Story S-002: Name</span></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Tools ── -->
+<section id="tools">
+  <div class="container">
+    <h2>All 26 tools</h2>
+    <p>Each tool is callable from any MCP client. All accept a <code>path</code> argument pointing to the project root.</p>
+
+    <div class="tools-grid">
+      <div class="tool-item">
+        <code>run_all</code>
+        <p>Run all five gates sequentially. Stops at the first BLOCKED gate and returns next-step instructions.</p>
+      </div>
+      <div class="tool-item">
+        <code>gate_check</code>
+        <p>Run a single gate (G1–G5). For targeted re-checks after fixing a specific violation.</p>
+      </div>
+      <div class="tool-item">
+        <code>diff_check</code>
+        <p>Analyse git diff to identify which gates need re-running. Reports ADR trigger status on architectural changes.</p>
+      </div>
+      <div class="tool-item">
+        <code>validate_artifact</code>
+        <p>Validate a single file (intent, requirements, design, tasks, story, adr, rca) with full criteria output.</p>
+      </div>
+      <div class="tool-item">
+        <code>complexity</code>
+        <p>Cyclomatic complexity, cognitive complexity, nesting depth, and function length. Uses bundled AST parsers and lizard.</p>
+      </div>
+      <div class="tool-item">
+        <code>check_mutation_score</code>
+        <p>Mutation testing via Stryker, mutmut, go-mutesting, or cargo-mutants. Returns score, survivors, and trend detection.</p>
+      </div>
+      <div class="tool-item">
+        <code>metrics</code>
+        <p>Query stored compliance metrics: gate pass rates, compliance score, CC history, mutation trend per project.</p>
+      </div>
+      <div class="tool-item">
+        <code>get_rollup</code>
+        <p>Cross-project compliance rankings, model comparisons, and agent performance statistics.</p>
+      </div>
+      <div class="tool-item">
+        <code>scaffold_spec</code>
+        <p>Generate spec file templates with guidance patterns and optionally write them to disk.</p>
+      </div>
+      <div class="tool-item">
+        <code>get_spec_guide</code>
+        <p>Reference guide teaching how to write passing spec files on the first attempt.</p>
+      </div>
+      <div class="tool-item">
+        <code>get_protocol</code>
+        <p>Return the full self-describing protocol: 5-gate methodology, tool signatures, severity levels.</p>
+      </div>
+      <div class="tool-item">
+        <code>check_reconciliation</code>
+        <p>Reconcile README claims against repository artifacts (RC-1) and verify task file references (RC-2).</p>
+      </div>
+      <div class="tool-item">
+        <code>check_evidence</code>
+        <p>Verify release artifacts have verification evidence (EV-1) and performance components have benchmarks (EV-2).</p>
+      </div>
+      <div class="tool-item">
+        <code>check_assumptions</code>
+        <p>Validate assumptions table: presence, shape, hedging language, and orphan invalidation detection.</p>
+      </div>
+      <div class="tool-item">
+        <code>track_assumption</code>
+        <p>Register a new assumption in the registry. Assumptions must be tracked before they can be invalidated.</p>
+      </div>
+      <div class="tool-item">
+        <code>invalidate_assumption</code>
+        <p>Mark an assumption as invalidated, triggering supersession of affected artifacts.</p>
+      </div>
+      <div class="tool-item">
+        <code>list_assumptions</code>
+        <p>List all tracked assumptions for a project path with status and history.</p>
+      </div>
+      <div class="tool-item">
+        <code>get_assumption_metrics</code>
+        <p>Assumption invalidation rates, category breakdown, and model-level accuracy statistics.</p>
+      </div>
+      <div class="tool-item">
+        <code>get_supersession_history</code>
+        <p>Supersession events for a project, optionally filtered to a date range.</p>
+      </div>
+      <div class="tool-item">
+        <code>check_dependencies</code>
+        <p>Report installed/missing analysis tools, what each enables, and available install commands.</p>
+      </div>
+      <div class="tool-item">
+        <code>install_dependency</code>
+        <p>Install a named dependency using the highest-priority available package manager.</p>
+      </div>
+      <div class="tool-item">
+        <code>begin_session</code>
+        <p>Register an agent session and receive initial workflow phase, obligations, and <code>must_call_next</code>.</p>
+      </div>
+      <div class="tool-item">
+        <code>report_agent_state</code>
+        <p>Persist caller-reported workflow state so the server can compute next required actions.</p>
+      </div>
+      <div class="tool-item">
+        <code>get_next_action</code>
+        <p>Return computed next checks, blocking prerequisites, and metrics obligations for the current agent.</p>
+      </div>
+      <div class="tool-item">
+        <code>list_agent_state</code>
+        <p>List latest workflow state for all agents in a project or session.</p>
+      </div>
+      <div class="tool-item">
+        <code>close_session</code>
+        <p>Mark the current session complete and persist final state.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Metrics ── -->
+<section id="metrics">
+  <div class="container">
+    <h2>Metrics and compliance history</h2>
+    <p>Every tool call writes a Parquet record to <code>~/.spec-check/data</code>. DuckDB queries the records on demand — no external database, no always-on process.</p>
+
+    <div class="metrics-cards">
+      <div class="metric-card">
+        <div class="metric-label">Tracked per project</div>
+        <div class="metric-value">G1–G5</div>
+        <div class="metric-desc">Pass rate history and trend per gate</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Complexity</div>
+        <div class="metric-value">CC</div>
+        <div class="metric-desc">Max CC, avg CC, and violation count per run — compared to CC-1 threshold</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Compliance score</div>
+        <div class="metric-value">0–100</div>
+        <div class="metric-desc">Weighted average of gate pass rates (G2 weighted highest at 30%)</div>
+      </div>
+      <div class="metric-card">
+        <div class="metric-label">Runs grouped by</div>
+        <div class="metric-value">ID</div>
+        <div class="metric-desc">Each <code>run_all</code> call gets a <code>run_batch_id</code> — one heatmap column per sweep</div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:2rem">Gate heatmap</h3>
+    <p>The compliance dashboard renders a gate heatmap: rows are G1–G5, columns are run iterations. Each column represents one <code>run_all</code> sweep (not individual gate records), so you can see how compliance evolved across iterations.</p>
+
+    <div style="background:var(--code-bg);border-radius:var(--radius);padding:1.5rem;margin-top:1rem;overflow-x:auto;">
+      <svg width="100%" viewBox="0 0 460 130" xmlns="http://www.w3.org/2000/svg" style="display:block;max-width:560px;margin:0 auto;">
+        <!-- gate labels -->
+        <text x="22" y="28"  text-anchor="end" fill="#b0a898" font-size="10" font-weight="bold" font-family="monospace">G1</text>
+        <text x="22" y="56"  text-anchor="end" fill="#b0a898" font-size="10" font-weight="bold" font-family="monospace">G2</text>
+        <text x="22" y="84"  text-anchor="end" fill="#b0a898" font-size="10" font-weight="bold" font-family="monospace">G3</text>
+        <text x="22" y="112" text-anchor="end" fill="#b0a898" font-size="10" font-weight="bold" font-family="monospace">G4</text>
+        <!-- cells: iteration columns -->
+        <!-- col 1: partial failure -->
+        <rect x="26" y="10" width="28" height="26" fill="#c1392b" rx="2"/>
+        <rect x="26" y="38" width="28" height="26" fill="#c1392b" rx="2"/>
+        <rect x="26" y="66" width="28" height="26" fill="#ece7db" rx="2"/>
+        <rect x="26" y="94" width="28" height="26" fill="#ece7db" rx="2"/>
+        <!-- col 2 -->
+        <rect x="58" y="10" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="58" y="38" width="28" height="26" fill="#c1392b" rx="2"/>
+        <rect x="58" y="66" width="28" height="26" fill="#ece7db" rx="2"/>
+        <rect x="58" y="94" width="28" height="26" fill="#ece7db" rx="2"/>
+        <!-- col 3 -->
+        <rect x="90" y="10" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="90" y="38" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="90" y="66" width="28" height="26" fill="#c1392b" rx="2"/>
+        <rect x="90" y="94" width="28" height="26" fill="#ece7db" rx="2"/>
+        <!-- col 4 -->
+        <rect x="122" y="10" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="122" y="38" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="122" y="66" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="122" y="94" width="28" height="26" fill="#c1392b" rx="2"/>
+        <!-- col 5 -->
+        <rect x="154" y="10" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="154" y="38" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="154" y="66" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <rect x="154" y="94" width="28" height="26" fill="#2a7f62" rx="2"/>
+        <!-- date labels -->
+        <text x="40"  y="126" text-anchor="middle" fill="#6a737d" font-size="8" font-family="monospace">11:03</text>
+        <text x="72"  y="126" text-anchor="middle" fill="#6a737d" font-size="8" font-family="monospace">11:47</text>
+        <text x="104" y="126" text-anchor="middle" fill="#6a737d" font-size="8" font-family="monospace">14:12</text>
+        <text x="136" y="126" text-anchor="middle" fill="#6a737d" font-size="8" font-family="monospace">Dec 16</text>
+        <text x="168" y="126" text-anchor="middle" fill="#6a737d" font-size="8" font-family="monospace">Dec 17</text>
+        <!-- legend -->
+        <rect x="210" y="48" width="10" height="10" fill="#2a7f62" rx="1"/>
+        <text x="224" y="57" fill="#b0a898" font-size="9" font-family="monospace">PASS</text>
+        <rect x="210" y="66" width="10" height="10" fill="#c1392b" rx="1"/>
+        <text x="224" y="75" fill="#b0a898" font-size="9" font-family="monospace">FAIL</text>
+        <rect x="210" y="84" width="10" height="10" fill="#ece7db" rx="1"/>
+        <text x="224" y="93" fill="#b0a898" font-size="9" font-family="monospace">no data</text>
+      </svg>
+    </div>
+    <p style="font-size:0.82rem;color:var(--muted);margin-top:0.5rem;text-align:center">Each column = one <code>run_all</code> call. Multiple iterations on the same day show HH:MM labels.</p>
+  </div>
+</section>
+
+<!-- ── Config ── -->
+<section id="config">
+  <div class="container">
+    <h2>Configuration</h2>
+    <p>Place <code>spec-check.config.json</code> in the project root. All fields are optional — defaults apply if absent.</p>
+
+    <pre>{
+  <span class="key">"thresholds"</span>: {
+    <span class="key">"CC-1"</span>: <span class="num">10</span>,      <span class="cmt">// max CC per function</span>
+    <span class="key">"CC-4"</span>: <span class="num">4</span>,       <span class="cmt">// max nesting depth</span>
+    <span class="key">"MT-1"</span>: <span class="num">80</span>,      <span class="cmt">// project mutation score floor (%)</span>
+    <span class="key">"MT-2"</span>: <span class="num">90</span>       <span class="cmt">// spec-critical function floor (%)</span>
+  },
+  <span class="key">"compliance_weights"</span>: {
+    <span class="key">"G1"</span>: <span class="num">0.15</span>, <span class="key">"G2"</span>: <span class="num">0.30</span>, <span class="key">"G3"</span>: <span class="num">0.20</span>,
+    <span class="key">"G4"</span>: <span class="num">0.15</span>, <span class="key">"G5"</span>: <span class="num">0.20</span>
+  },
+  <span class="key">"metrics"</span>: {
+    <span class="key">"db_path"</span>: <span class="str">"~/.spec-check/data"</span>,
+    <span class="key">"retention_days"</span>: <span class="num">365</span>
+  },
+  <span class="key">"mutation"</span>: {
+    <span class="key">"enabled"</span>: <span class="val">true</span>,
+    <span class="key">"incremental"</span>: <span class="val">true</span>,
+    <span class="key">"triggers"</span>: { <span class="key">"default"</span>: <span class="str">"pre_merge"</span> }
+  }
+}</pre>
+
+    <h3 style="margin-top:1.5rem">Key thresholds</h3>
+    <table>
+      <thead><tr><th>ID</th><th>Controls</th><th>Default</th></tr></thead>
+      <tbody>
+        <tr><td>CC-1</td><td>Max cyclomatic complexity per function</td><td>10</td></tr>
+        <tr><td>CC-3</td><td>Max average CC per file</td><td>5</td></tr>
+        <tr><td>CC-4</td><td>Max nesting depth per function</td><td>4</td></tr>
+        <tr><td>CC-5</td><td>Max function length (lines)</td><td>5 (relative score)</td></tr>
+        <tr><td>MT-1</td><td>Project mutation score floor (%)</td><td>80</td></tr>
+        <tr><td>MT-2</td><td>Spec-critical function mutation floor (%)</td><td>90</td></tr>
+        <tr><td>MT-4</td><td>High-CC threshold for survivor check</td><td>10</td></tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:1.5rem">Mutation triggers</h3>
+    <table>
+      <thead><tr><th>Trigger</th><th>When it runs</th></tr></thead>
+      <tbody>
+        <tr><td>pre_merge</td><td>CI / merge context detected (recommended)</td></tr>
+        <tr><td>nightly</td><td>Scheduled overnight run</td></tr>
+        <tr><td>weekly</td><td>Scheduled weekly run</td></tr>
+        <tr><td>on_demand</td><td>Explicit tool invocation only</td></tr>
+        <tr><td>pre_commit</td><td>Every commit (not recommended for large codebases)</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ── Get started ── -->
+<section id="quickstart">
+  <div class="container">
+    <h2>Get started</h2>
+
+    <div class="steps">
+      <div class="step">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>Install</h3>
+          <pre><span class="dim">$</span> npm install -g spec-check
+<span class="dim"># or use without installing:</span>
+<span class="dim">$</span> npx spec-check</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>Add to Claude Desktop</h3>
+          <p>Edit <code>~/Library/Application Support/Claude/claude_desktop_config.json</code>:</p>
+          <pre>{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"spec-check"</span>: {
+      <span class="key">"command"</span>: <span class="str">"npx"</span>,
+      <span class="key">"args"</span>: [<span class="str">"-y"</span>, <span class="str">"spec-check"</span>],
+      <span class="key">"env"</span>: {
+        <span class="key">"LLM_PROVIDER"</span>: <span class="str">"anthropic"</span>,
+        <span class="key">"LLM_MODEL"</span>: <span class="str">"claude-sonnet-4-6"</span>
+      }
+    }
+  }
+}</pre>
+          <p style="font-size:0.85rem;color:var(--muted)">Restart Claude Desktop after saving. The server connects via stdio — no port, no daemon.</p>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Scaffold your spec files</h3>
+          <p>Ask Claude to scaffold your spec. It will call <code>scaffold_spec</code> with your project path, generating templates for all five artifacts.</p>
+          <pre><span class="cmt">// Example prompt</span>
+<span class="str">"scaffold spec files for my project at /path/to/project"</span></pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">4</div>
+        <div class="step-body">
+          <h3>Run your first gate check</h3>
+          <pre><span class="cmt">// Ask Claude:</span>
+<span class="str">"run all gates on /path/to/project"</span>
+
+<span class="cmt">// The server calls run_all and returns:</span>
+{
+  <span class="key">"status"</span>: <span class="str">"BLOCKED"</span>,
+  <span class="key">"gates"</span>: [
+    {
+      <span class="key">"gate"</span>: <span class="str">"G1"</span>,
+      <span class="key">"status"</span>: <span class="str">"BLOCKED"</span>,
+      <span class="key">"criteria"</span>: [{
+        <span class="key">"id"</span>: <span class="str">"I-1"</span>,
+        <span class="key">"status"</span>: <span class="str">"BLOCK"</span>,
+        <span class="key">"detail"</span>: <span class="str">"intent.md not found"</span>,
+        <span class="key">"fix"</span>: <span class="str">"Create intent.md with Problem and Intent sections"</span>
+      }]
+    }
+  ]
+}</pre>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-num">5</div>
+        <div class="step-body">
+          <h3>Optional: install analysis tools</h3>
+          <pre><span class="cmt">// Check what's available:</span>
+<span class="str">"check what analysis dependencies are installed"</span>
+
+<span class="cmt">// Install lizard for cognitive complexity:</span>
+<span class="dim">$</span> pip install lizard
+
+<span class="cmt">// Install Stryker for mutation testing (TypeScript/JS):</span>
+<span class="dim">$</span> npm install --save-dev @stryker-mutator/core</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer>
+  <p>spec-check · MIT License · <a href="https://github.com/tenguns/spec-check">github.com/tenguns/spec-check</a></p>
+  <p style="margin-top:0.5rem;font-size:0.75rem">No telemetry · No network calls · All data stays local</p>
+</footer>
+
+</body>
+</html>
