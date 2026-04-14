@@ -820,11 +820,58 @@ function makeMutationReport(
   };
 }
 
+function languageBlockDetail(language: MutationReport["language"]): string {
+  return language === "mixed"
+    ? "Mutation scope contains multiple languages. v1 requires a single-language scope per run."
+    : "No supported mutation-testing language was detected in the requested scope.";
+}
+
 function missingDependencyForLanguage(language: MutationLanguage): string {
   if (language === "python") return "mutmut";
   if (language === "go") return "go-mutesting";
   if (language === "rust") return "cargo-mutants";
   return "stryker";
+}
+
+function checkMT1ProjectScore(raw: RawMutationResult, config: ResolvedConfig): CriterionResult {
+  const threshold = getThreshold(config, "MT-1");
+  if (typeof raw.score === "number" && raw.score < threshold) {
+    return { id: "MT-1", status: "WARNING", detail: `Project mutation score ${raw.score.toFixed(1)}% is below threshold ${threshold}%.`, fix: `Improve tests to close the ${(threshold - raw.score).toFixed(1)} point gap.` };
+  }
+  return { id: "MT-1", status: "PASS", detail: typeof raw.score === "number" ? `Project mutation score ${raw.score.toFixed(1)}% meets threshold ${threshold}%.` : "Project mutation score was unavailable from the underlying tool." };
+}
+
+function checkMT2CriticalFunctions(functions: MutationFunctionResult[], config: ResolvedConfig): CriterionResult {
+  const threshold = getThreshold(config, "MT-2");
+  const failures = functions.filter((fn) => fn.critical && typeof fn.score === "number" && fn.score < threshold);
+  if (failures.length > 0) {
+    return { id: "MT-2", status: "VIOLATION", detail: `${failures.length} spec-critical functions fell below the ${threshold}% threshold.`, evidence: failures.map((fn) => `${fn.file}:${fn.name}=${fn.score?.toFixed(1)}% survivors=${fn.surviving_mutants.join(", ") || "none"}`), fix: "Strengthen assertions around the spec-critical behaviors until surviving mutants are killed." };
+  }
+  return { id: "MT-2", status: "PASS", detail: "No spec-critical functions were found below the configured mutation threshold." };
+}
+
+function checkMT3Trend(raw: RawMutationResult, service: ServiceInfo, config: ResolvedConfig): CriterionResult {
+  const prior = latestHistoricalScores(service, config);
+  const series = [...prior, raw.score].filter((v): v is number => typeof v === "number");
+  const len = series.length;
+  if (len >= 3 && series[len - 3]! > series[len - 2]! && series[len - 2]! > series[len - 1]!) {
+    return { id: "MT-3", status: "WARNING", detail: `Mutation score declined across three consecutive runs: ${series.slice(-3).map((v) => v.toFixed(1)).join(" -> ")}.`, fix: "Inspect recently changed tests and surviving mutants before the decline becomes persistent." };
+  }
+  return { id: "MT-3", status: "PASS", detail: len >= 2 ? "No consecutive multi-run decline detected." : "Not enough historical mutation runs to evaluate decline." };
+}
+
+function checkMT4HighCcSurvivors(functions: MutationFunctionResult[], config: ResolvedConfig): CriterionResult {
+  const threshold = getThreshold(config, "MT-4");
+  const survivors = functions.filter((fn) => (fn.cc ?? -1) > threshold && fn.surviving_mutants.length > 0);
+  if (survivors.length > 0) {
+    return { id: "MT-4", status: "VIOLATION", detail: `${survivors.length} high-complexity functions have surviving mutants.`, evidence: survivors.map((fn) => `${fn.file}:${fn.name} cc=${fn.cc} survivors=${fn.surviving_mutants.join(", ")}`), fix: "Prioritize stronger tests for the highest-complexity functions first." };
+  }
+  return { id: "MT-4", status: "PASS", detail: "No surviving mutants were found in functions above the configured complexity threshold." };
+}
+
+function checkMTDuration(start: number): CriterionResult | null {
+  if (Date.now() - start <= 300_000) return null;
+  return { id: "MT-DUR", status: "WARNING", detail: "Mutation run exceeded 5 minutes.", fix: "Narrow scope or use incremental mode where supported." };
 }
 
 export async function runMutation(
@@ -867,9 +914,7 @@ export async function runMutation(
     criteria.push({
       id: "MT-L",
       status: "BLOCK",
-      detail: scope.language === "mixed"
-        ? "Mutation scope contains multiple languages. v1 requires a single-language scope per run."
-        : "No supported mutation-testing language was detected in the requested scope.",
+      detail: languageBlockDetail(scope.language),
       fix: "Run check_mutation_score on a single-language directory or file.",
     });
     const report = makeMutationReport(targetPath, start, trigger, scope, criteria, notes);
@@ -942,86 +987,12 @@ export async function runMutation(
   functions = markCriticalFunctions(functions, specHints);
   functions = attachComplexity(functions, loadComplexityMap(service, config));
 
-  const projectThreshold = getThreshold(config, "MT-1");
-  const criticalThreshold = getThreshold(config, "MT-2");
-  const highCcThreshold = getThreshold(config, "MT-4");
-
-  if (typeof raw.score === "number" && raw.score < projectThreshold) {
-    criteria.push({
-      id: "MT-1",
-      status: "WARNING",
-      detail: `Project mutation score ${raw.score.toFixed(1)}% is below threshold ${projectThreshold}%.`,
-      fix: `Improve tests to close the ${(projectThreshold - raw.score).toFixed(1)} point gap.`,
-    });
-  } else {
-    criteria.push({
-      id: "MT-1",
-      status: "PASS",
-      detail: typeof raw.score === "number"
-        ? `Project mutation score ${raw.score.toFixed(1)}% meets threshold ${projectThreshold}%.`
-        : "Project mutation score was unavailable from the underlying tool.",
-    });
-  }
-
-  const criticalFailures = functions.filter((fn) => fn.critical && typeof fn.score === "number" && fn.score < criticalThreshold);
-  if (criticalFailures.length > 0) {
-    criteria.push({
-      id: "MT-2",
-      status: "VIOLATION",
-      detail: `${criticalFailures.length} spec-critical functions fell below the ${criticalThreshold}% threshold.`,
-      evidence: criticalFailures.map((fn) => `${fn.file}:${fn.name}=${fn.score?.toFixed(1)}% survivors=${fn.surviving_mutants.join(", ") || "none"}`),
-      fix: "Strengthen assertions around the spec-critical behaviors until surviving mutants are killed.",
-    });
-  } else {
-    criteria.push({
-      id: "MT-2",
-      status: "PASS",
-      detail: "No spec-critical functions were found below the configured mutation threshold.",
-    });
-  }
-
-  const priorScores = latestHistoricalScores(service, config);
-  const trend = [...priorScores, raw.score].filter((value): value is number => typeof value === "number");
-  if (trend.length >= 3 && trend[trend.length - 3]! > trend[trend.length - 2]! && trend[trend.length - 2]! > trend[trend.length - 1]!) {
-    criteria.push({
-      id: "MT-3",
-      status: "WARNING",
-      detail: `Mutation score declined across three consecutive runs: ${trend.slice(-3).map((value) => value.toFixed(1)).join(" -> ")}.`,
-      fix: "Inspect recently changed tests and surviving mutants before the decline becomes persistent.",
-    });
-  } else {
-    criteria.push({
-      id: "MT-3",
-      status: "PASS",
-      detail: trend.length >= 2 ? "No consecutive multi-run decline detected." : "Not enough historical mutation runs to evaluate decline.",
-    });
-  }
-
-  const highCcSurvivors = functions.filter((fn) => (fn.cc ?? -1) > highCcThreshold && fn.surviving_mutants.length > 0);
-  if (highCcSurvivors.length > 0) {
-    criteria.push({
-      id: "MT-4",
-      status: "VIOLATION",
-      detail: `${highCcSurvivors.length} high-complexity functions have surviving mutants.`,
-      evidence: highCcSurvivors.map((fn) => `${fn.file}:${fn.name} cc=${fn.cc} survivors=${fn.surviving_mutants.join(", ")}`),
-      fix: "Prioritize stronger tests for the highest-complexity functions first.",
-    });
-  } else {
-    criteria.push({
-      id: "MT-4",
-      status: "PASS",
-      detail: "No surviving mutants were found in functions above the configured complexity threshold.",
-    });
-  }
-
-  if (Date.now() - start > 300_000) {
-    criteria.push({
-      id: "MT-DUR",
-      status: "WARNING",
-      detail: "Mutation run exceeded 5 minutes.",
-      fix: "Narrow scope or use incremental mode where supported.",
-    });
-  }
+  criteria.push(checkMT1ProjectScore(raw, config));
+  criteria.push(checkMT2CriticalFunctions(functions, config));
+  criteria.push(checkMT3Trend(raw, service, config));
+  criteria.push(checkMT4HighCcSurvivors(functions, config));
+  const durCriteria = checkMTDuration(start);
+  if (durCriteria) criteria.push(durCriteria);
 
   const report: MutationReport = {
     path: resolve(targetPath),
