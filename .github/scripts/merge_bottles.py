@@ -15,21 +15,38 @@ import re
 import sys
 
 
+def iter_formula_entries(data):
+    """Yield formula dicts from either list or dict top-level structure."""
+    if isinstance(data, list):
+        for item in data:
+            if isinstance(item, dict):
+                yield from item.values()
+    elif isinstance(data, dict):
+        yield from data.values()
+
+
 def load_bottles(json_files: list[str]) -> dict[str, str]:
     """Return {os_tag: sha256} from all bottle JSON files."""
     bottles: dict[str, str] = {}
     for path in json_files:
         with open(path) as f:
-            data = json.load(f)
-        for formula_data in data.values():
-            for tag, info in formula_data["bottle"]["tags"].items():
-                bottles[tag] = info["sha256"]
+            raw = f.read().strip()
+        print(f"  {path}: {raw[:120]}...")
+        data = json.loads(raw)
+        for formula_data in iter_formula_entries(data):
+            if not isinstance(formula_data, dict):
+                continue
+            bottle = formula_data.get("bottle", {})
+            tags = bottle.get("tags", {})
+            for tag, info in tags.items():
+                if isinstance(info, dict) and "sha256" in info:
+                    bottles[tag] = info["sha256"]
     return bottles
 
 
 def build_bottle_block(root_url: str, bottles: dict[str, str]) -> str:
     lines = ["  bottle do", f'    root_url "{root_url}"']
-    # Stable sort: arm64 variants first, then x86_64
+    # arm64 variants first, then others, alphabetically within each group
     for tag in sorted(bottles, key=lambda t: (not t.startswith("arm64"), t)):
         lines.append(f'    sha256 cellar: :any_skip_relocation, {tag}: "{bottles[tag]}"')
     lines.append("  end")
@@ -68,6 +85,7 @@ def main() -> None:
         print("No bottle JSON files found in current directory.", file=sys.stderr)
         sys.exit(1)
 
+    print(f"Found JSON files: {json_files}")
     bottles = load_bottles(json_files)
     if not bottles:
         print("No bottle entries found in JSON files.", file=sys.stderr)

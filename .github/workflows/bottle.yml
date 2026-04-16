@@ -17,6 +17,8 @@ jobs:
   build:
     name: Bottle (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    outputs:
+      tag: ${{ steps.tag.outputs.name }}
     strategy:
       fail-fast: false
       matrix:
@@ -102,15 +104,21 @@ jobs:
 
       - name: Merge bottle hashes into formula
         run: |
+          TAG="${{ needs.build.outputs.tag }}"
+          [ -z "$TAG" ] && TAG="${{ inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_REF_NAME}"
           python3 .github/scripts/merge_bottles.py \
             Formula/spec-check.rb \
-            "https://github.com/${{ github.repository }}/releases/download/${{ needs.build.outputs.tag || github.ref_name }}"
+            "https://github.com/${{ github.repository }}/releases/download/${TAG}"
 
       - name: Commit updated formula
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/spec-check.rb
+          TAG="${{ needs.build.outputs.tag }}"
+          [ -z "$TAG" ] && TAG="${{ inputs.tag }}"
+          [ -z "$TAG" ] && TAG="${GITHUB_REF_NAME}"
           git diff --cached --quiet || \
-            git commit -m "chore(formula): add bottle references for ${GITHUB_REF_NAME}"
+            git commit -m "chore(formula): add bottle references for ${TAG}"
           git push

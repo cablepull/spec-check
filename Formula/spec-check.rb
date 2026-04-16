@@ -5,7 +5,7 @@ class SpecCheck < Formula
   sha256 "8ca505d38db6c8fea3d7bd1e6a2fce89d2215dbc97ef22e4613b4584722d578f"
   license "MIT"
 
-  depends_on "node"
+  depends_on "node@22"
 
   def install
     # Install all deps (including devDeps for tsc), compile TypeScript, then prune
@@ -17,7 +17,7 @@ class SpecCheck < Formula
 
     (bin/"spec-check").write <<~SH
       #!/bin/sh
-      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/dist/cli.js" "$@"
+      exec "#{Formula["node@22"].opt_bin}/node" "#{libexec}/dist/cli.js" "$@"
     SH
   end
 
