@@ -66,19 +66,40 @@ npm install -g spec-check   # or: npx spec-check
 
 ## Runtime modes
 
-**MCP stdio mode** starts by default:
+### MCP server (default)
+
+Running `spec-check` with no arguments starts the MCP stdio server. This is what LLM tools connect to — Claude Code, Cursor, and any other MCP-compatible client send tool calls over stdin/stdout and receive structured JSON responses.
 
 ```bash
-npx spec-check
+spec-check          # starts MCP stdio server
+npx spec-check      # same, without global install
 ```
 
-**Local daemon mode** starts the dashboard and HTTP API:
+Register it in your LLM tool's MCP config (see [Add to your MCP client](#add-to-your-mcp-client) below), or run `spec-check init --tool <name>` to have it written automatically.
+
+### Local daemon
+
+The daemon starts an HTTP API and dashboard on `127.0.0.1:4319`. Use this when you want to call spec-check from scripts, CI, or a browser dashboard rather than through an LLM tool.
 
 ```bash
-npx spec-check server
+spec-check server           # start daemon + dashboard
+spec-check server --port=4321
 ```
 
-The daemon binds to `127.0.0.1:4319` by default. Override the port with `--port=4321` or `PORT=4321`.
+### Onboarding (init)
+
+`spec-check init` writes the integration config files for your LLM tool and prints the MCP server entry to register.
+
+```bash
+spec-check init --tool claude   # writes CLAUDE.md, prints MCP entry
+spec-check init --tool cursor   # writes .cursor/rules/spec-check.mdc
+spec-check init --tool gemini   # writes .gemini/GEMINI.md
+spec-check init --tool codex    # writes codex.md
+spec-check init --tool ollama   # writes .ollama/spec-check.md
+spec-check init --all           # all tools detected on this machine
+```
+
+Flags: `--path <dir>` (project root, default `.`), `--force` (overwrite existing files), `--install` (install missing dependencies).
 
 **Optional dependencies** (detected automatically, install as needed):
 
