@@ -1,19 +1,19 @@
 class SpecCheck < Formula
   desc "Spec-driven development gate system for LLM-driven tools"
   homepage "https://github.com/cablepull/spec-check"
-  url "https://github.com/cablepull/spec-check/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "8ca505d38db6c8fea3d7bd1e6a2fce89d2215dbc97ef22e4613b4584722d578f"
+  url "https://github.com/cablepull/spec-check/archive/refs/tags/v0.1.1.tar.gz"
+  sha256 "PLACEHOLDER"
   license "MIT"
 
   bottle do
-    root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.0"
-    sha256 cellar: :any_skip_relocation, arm64_sequoia: "98950f2a7425488a1787e9c233a9609d94fa6119c10d036dcae5f1724336e163"
-    sha256 cellar: :any_skip_relocation, arm64_sonoma: "0908fcd470c5901e18d5223101324b83073b60e0b07e2231cd280edf0cca6448"
+    root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.1"
+    # Bottles must be rebuilt after node@22 → node@24 and duckdb 0.10 → 1.4.4 bump
   end
 
-  depends_on "node@22"
+  depends_on "node@24"
 
   def install
+    ENV.prepend_path "PATH", Formula["node@24"].opt_bin
     # Install all deps (including devDeps for tsc), compile TypeScript, then prune
     system "npm", "ci"
     system "npm", "run", "build"
@@ -23,7 +23,7 @@ class SpecCheck < Formula
 
     (bin/"spec-check").write <<~SH
       #!/bin/sh
-      exec "#{Formula["node@22"].opt_bin}/node" "#{libexec}/dist/cli.js" "$@"
+      exec "#{Formula["node@24"].opt_bin}/node" "#{libexec}/dist/cli.js" "$@"
     SH
   end
 
@@ -60,7 +60,7 @@ class SpecCheck < Formula
   end
 
   test do
-    assert_match "0.1.0", shell_output("#{bin}/spec-check --version")
+    assert_match "0.1.1", shell_output("#{bin}/spec-check --version")
     assert_match "spec-check", shell_output("#{bin}/spec-check --help")
   end
 end
