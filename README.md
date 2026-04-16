@@ -8,15 +8,18 @@ Runs entirely offline. No code, intent, or metrics leave the machine.
 
 ## How it works
 
-Projects are expected to maintain five spec artifacts:
+Projects maintain spec artifacts across several directories. Each gate checks one layer:
 
-| File | Purpose |
-|---|---|
-| `intent.md` | Problem statement, goals, and why the project exists |
-| `requirements.md` | Features with numbered rules and acceptance criteria |
-| `design.md` | Architecture, component decisions, and tradeoffs |
-| `tasks.md` | Breakdown of work items with status tracking |
-| `tests/` or `test/` | Executable test coverage |
+| Artifact | Gate | Purpose |
+|---|---|---|
+| `stories/` | G1 | One file per feature — intent, acceptance criteria, assumptions |
+| `prd/` | G2 | Feature → Rule → Example specs (compiled into `requirements.md`) |
+| `adr/` | G3 | Architecture decision records with requirement traceability |
+| `tasks.md` | G4 | Atomic implementation tasks, each citing a rule ID |
+| `tests/` | G5 | Executable test coverage |
+| `rca/` | — | Root cause analyses for incidents and assumption failures |
+| `intent.md` | G1 | Project-level problem statement, goals, and constraints |
+| `requirements.md` | G2 | Compiled output of `prd/` files — do not edit directly |
 
 The runtime exposes the same tool catalog through MCP and the local JSON API. The primary workflow is:
 
