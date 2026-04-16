@@ -62,6 +62,13 @@ jobs:
             --json \
             --root-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}" \
             cablepull/spec-check/spec-check
+          # Homebrew constructs download URLs using url_encode (single dash between
+          # name and version) but brew bottle generates files with double dash.
+          # Rename to match what Homebrew actually requests.
+          for f in spec-check--*.tar.gz; do
+            [ -e "$f" ] || continue
+            mv "$f" "${f/spec-check--/spec-check-}"
+          done
 
       - name: Upload bottle to release
         uses: softprops/action-gh-release@v2
