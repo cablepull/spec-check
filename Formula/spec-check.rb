@@ -7,8 +7,9 @@ class SpecCheck < Formula
 
   bottle do
     root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.1"
-    sha256 cellar: :any_skip_relocation, arm64_sequoia: "0f757f96c0eea8f6c5fc131d7912ff92d031188c66f8f4362ad11b8567ce13f2"
-    sha256 cellar: :any_skip_relocation, arm64_sonoma: "970baeece09f47b4482c484e5385481c404d464f54694da9809ff3c8755aa8ca"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, arm64_sequoia: "75da6a3d548a0bc90a75a003074d3407041fa4dcfa98836741000c62fcd0067d"
+    sha256 cellar: :any_skip_relocation, arm64_sonoma: "e119568771921b992256472fc202552322aa55dcda5219c383c3d1bd51cd9e67"
   end
 
   depends_on "node@24"
