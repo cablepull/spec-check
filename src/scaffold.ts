@@ -322,6 +322,57 @@ const FILE_META: Record<string, { guidance: string[]; violations: string[] }> = 
 
 const SPEC_FILES = ["stories", "prd", "adr", "tasks.md"] as const;
 
+interface EntryContent {
+  starterFilename: string;
+  content: string;
+}
+
+function buildAdrFeatureIds(absRoot: string): string[] {
+  const reqPath = join(absRoot, "requirements.md");
+  if (!existsSync(reqPath)) return ["F-1", "F-2", "F-3"];
+  const reqContent = readFileSync(reqPath, "utf8");
+  const featureIds: string[] = [];
+  for (const m of reqContent.matchAll(/##\s+Feature\s+(F-\d+)/g)) featureIds.push(m[1]!);
+  return featureIds.length > 0 ? featureIds : ["F-1", "F-2", "F-3"];
+}
+
+function buildEntryContent(entry: string, absRoot: string, projectTitle: string, sourceSummary: string): EntryContent {
+  if (entry === "stories") return { starterFilename: "001-initial-story.md", content: buildStoryTemplate(projectTitle, sourceSummary) };
+  if (entry === "prd") return { starterFilename: "001-initial-feature.md", content: buildPrdTemplate(projectTitle) };
+  if (entry === "adr") return { starterFilename: "001-initial-decision.md", content: buildAdrTemplate(projectTitle, buildAdrFeatureIds(absRoot)) };
+  return { starterFilename: entry, content: buildTasksTemplate(projectTitle) };
+}
+
+interface EntryPaths {
+  filePath: string;
+  displayFilename: string;
+  exists: boolean;
+}
+
+function resolveEntryPaths(entry: string, absRoot: string, starterFilename: string): EntryPaths {
+  if (entry.includes(".")) {
+    const filePath = join(absRoot, entry);
+    return { filePath, displayFilename: entry, exists: existsSync(filePath) };
+  }
+  const dirPath = join(absRoot, entry);
+  const filePath = join(dirPath, starterFilename);
+  const displayFilename = `${entry}/${starterFilename}`;
+  let exists = false;
+  try { exists = existsSync(dirPath) && readdirSync(dirPath).some((f) => f.endsWith(".md")); } catch { /* ignore */ }
+  return { filePath, displayFilename, exists };
+}
+
+function writeEntryFile(filePath: string, content: string, displayFilename: string, notes: string[]): boolean {
+  try {
+    mkdirSync(dirname(filePath), { recursive: true });
+    writeFileSync(filePath, content, "utf8");
+    return true;
+  } catch (err) {
+    notes.push(`Could not write ${displayFilename}: ${err instanceof Error ? err.message : String(err)}`);
+    return false;
+  }
+}
+
 export function scaffoldSpec(
   projectRoot: string,
   sourceHint?: string,
@@ -340,10 +391,7 @@ export function scaffoldSpec(
     } catch { /* ignore read errors */ }
   }
 
-  const sourceSummary = sourceContent
-    ? extractSourceSummary(sourceContent)
-    : "your project";
-
+  const sourceSummary = sourceContent ? extractSourceSummary(sourceContent) : "your project";
   const projectTitle = sourceTitle ?? "Your Project";
 
   const skippedExisting: string[] = [];
@@ -351,71 +399,16 @@ export function scaffoldSpec(
   const notes: string[] = [];
 
   for (const entry of SPEC_FILES) {
-    const isDir = !entry.includes(".");
-    const metaKey = isDir ? `${entry}/` : entry;
+    const metaKey = entry.includes(".") ? entry : `${entry}/`;
     const meta = FILE_META[metaKey] ?? { guidance: [], violations: [] };
-
-    // Determine starter filename and content
-    let starterFilename: string = entry;
-    let content = "";
-
-    if (entry === "stories") {
-      starterFilename = "001-initial-story.md";
-      content = buildStoryTemplate(projectTitle, sourceSummary);
-    } else if (entry === "prd") {
-      starterFilename = "001-initial-feature.md";
-      content = buildPrdTemplate(projectTitle);
-    } else if (entry === "adr") {
-      // Extract feature IDs from compiled requirements if already present
-      const featureIds: string[] = [];
-      const reqPath = join(absRoot, "requirements.md");
-      if (existsSync(reqPath)) {
-        const reqContent = readFileSync(reqPath, "utf8");
-        const matches = reqContent.matchAll(/##\s+Feature\s+(F-\d+)/g);
-        for (const m of matches) featureIds.push(m[1]!);
-      }
-      if (featureIds.length === 0) featureIds.push("F-1", "F-2", "F-3");
-      starterFilename = "001-initial-decision.md";
-      content = buildAdrTemplate(projectTitle, featureIds);
-    } else {
-      // tasks.md (flat file)
-      content = buildTasksTemplate(projectTitle);
-    }
-
-    // Resolve paths and existence
-    let filePath: string;
-    let displayFilename: string;
-    let exists: boolean;
-
-    if (isDir) {
-      const dirPath = join(absRoot, entry);
-      filePath = join(dirPath, starterFilename);
-      displayFilename = `${entry}/${starterFilename}`;
-      // "exists" means the directory already has at least one .md file
-      try {
-        exists = existsSync(dirPath) && readdirSync(dirPath).some((f) => f.endsWith(".md"));
-      } catch {
-        exists = false;
-      }
-    } else {
-      filePath = join(absRoot, entry);
-      displayFilename = entry;
-      exists = existsSync(filePath);
-    }
+    const { starterFilename, content } = buildEntryContent(entry, absRoot, projectTitle, sourceSummary);
+    const { filePath, displayFilename, exists } = resolveEntryPaths(entry, absRoot, starterFilename);
 
     let written = false;
-    if (!exists) {
-      if (write) {
-        try {
-          mkdirSync(dirname(filePath), { recursive: true });
-          writeFileSync(filePath, content, "utf8");
-          written = true;
-        } catch (err) {
-          notes.push(`Could not write ${displayFilename}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    } else {
+    if (exists) {
       skippedExisting.push(displayFilename);
+    } else if (write) {
+      written = writeEntryFile(filePath, content, displayFilename, notes);
     }
 
     files.push({

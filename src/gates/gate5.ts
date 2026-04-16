@@ -243,6 +243,58 @@ function resolveTestCommands(
   return { commands: detected, autoDetected: true };
 }
 
+function resolveGate5Status(criteria: CriterionResult[]): GateResult["status"] {
+  if (criteria.some((c) => c.status === "BLOCK")) return "BLOCKED";
+  if (criteria.some((c) => c.status === "VIOLATION")) return "FAILING";
+  if (criteria.some((c) => c.status === "WARNING")) return "PASSING_WITH_WARNINGS";
+  return "PASS";
+}
+
+function checkE1Tests(
+  testFiles: string[],
+  commands: string[],
+  projectRoot: string,
+  autoDetected: boolean,
+  criteria: CriterionResult[]
+): boolean {
+  if (testFiles.length === 0 && commands.length === 0) {
+    criteria.push({ id: "E-1", status: "BLOCK", detail: "No test files found and no test runner detected.", fix: "Add test files (*.test.ts, *.spec.rs, test/*.py, …) or set `test_commands` in spec-check.config.json. Example: { \"test_commands\": [\"npm test\", \"cargo test\"] }" });
+    return false;
+  }
+  if (commands.length === 0) {
+    criteria.push({ id: "E-1", status: "WARNING", detail: `${testFiles.length} test file(s) found but no test runner was detected.`, evidence: testFiles.slice(0, 5).map((f) => relative(projectRoot, f)), fix: "Set `test_commands` in spec-check.config.json to specify how to run the test suite." });
+    return true;
+  }
+  const outcomes = commands.map((cmd) => runOne(cmd, projectRoot));
+  const failures = outcomes.filter((o) => o.exitCode !== 0);
+  if (failures.length > 0) {
+    const detail = failures.map((o) => `\`${o.command}\` exited with code ${o.exitCode}`).join("; ");
+    criteria.push({ id: "E-1", status: "BLOCK", detail, evidence: failures.flatMap((o) => o.stderr ? [o.stderr] : []), fix: "Fix failing tests reported above before proceeding." });
+    return false;
+  }
+  const passed = outcomes.map((o) => `\`${o.command}\``).join(", ");
+  const evidence = [...testFiles.slice(0, 5).map((f) => relative(projectRoot, f)), ...(autoDetected ? ["(commands auto-detected)"] : [])];
+  criteria.push({ id: "E-1", status: "PASS", detail: `${testFiles.length} test file(s) found. ${passed} exited 0.`, evidence });
+  return true;
+}
+
+function checkE2Coverage(specPath: string, testFiles: string[], projectRoot: string, threshold: number, criteria: CriterionResult[]): void {
+  const reqFile = findRequirementsFile(specPath);
+  const reqText = reqFile ? readFile(reqFile) : "";
+  const rules = reqText ? extractRules(reqText) : [];
+  if (rules.length === 0) {
+    criteria.push({ id: "E-2", status: "WARNING", detail: "No parseable requirements rules were found to compare against tests.", fix: "Ensure requirements.md contains `Rule R-N:` headings before using Gate 5 coverage checks." });
+    return;
+  }
+  const coverage = findRuleCoverage(rules, testFiles, projectRoot, threshold);
+  const coveragePct = (coverage.covered.length / rules.length) * 100;
+  if (coverage.missing.length > 0) {
+    criteria.push({ id: "E-2", status: "VIOLATION", detail: `${coverage.missing.length}/${rules.length} rule(s) have no corresponding test. Coverage ${coveragePct.toFixed(1)}%.`, evidence: coverage.missing.slice(0, 8).map((rule) => `${rule.id}: ${rule.text}`), fix: "Add tests whose names or descriptions match each uncovered Rule, or reference the Rule ID directly in test titles." });
+  } else {
+    criteria.push({ id: "E-2", status: "PASS", detail: `All ${rules.length} rules have corresponding tests. Coverage ${coveragePct.toFixed(1)}%.`, evidence: coverage.evidence.slice(0, 8) });
+  }
+}
+
 // ── Gate entry point ──────────────────────────────────────────────────────────
 
 export async function runGate5(
@@ -254,145 +306,21 @@ export async function runGate5(
   const criteria: CriterionResult[] = [];
 
   const testFiles = walkTests(projectRoot);
-  const { commands, autoDetected } = resolveTestCommands(
-    projectRoot,
-    config.value.test_command,
-    config.value.test_commands
-  );
+  const { commands, autoDetected } = resolveTestCommands(projectRoot, config.value.test_command, config.value.test_commands);
 
-  // ── E-1: Test files present and all test commands pass ────────────────────
-  if (testFiles.length === 0 && commands.length === 0) {
-    criteria.push({
-      id: "E-1",
-      status: "BLOCK",
-      detail: "No test files found and no test runner detected.",
-      fix: [
-        "Add test files (*.test.ts, *.spec.rs, test/*.py, …) or set `test_commands` in spec-check.config.json.",
-        "Example: { \"test_commands\": [\"npm test\", \"cargo test\"] }",
-      ].join(" "),
-    });
-    return {
-      gate: "G5",
-      name: "Executability Valid",
-      status: "BLOCKED",
-      criteria,
-      durationMs: Date.now() - start,
-    };
+  const canContinue = checkE1Tests(testFiles, commands, projectRoot, autoDetected, criteria);
+  if (!canContinue && criteria.some((c) => c.status === "BLOCK")) {
+    return { gate: "G5", name: "Executability Valid", status: "BLOCKED", criteria, durationMs: Date.now() - start };
   }
 
-  if (commands.length > 0) {
-    const outcomes = commands.map((cmd) => runOne(cmd, projectRoot));
-    const failures = outcomes.filter((o) => o.exitCode !== 0);
-    const evidence = [
-      ...testFiles.slice(0, 5).map((f) => relative(projectRoot, f)),
-      ...(autoDetected ? ["(commands auto-detected)"] : []),
-    ];
+  checkE2Coverage(specPath, testFiles, projectRoot, getThreshold(config, "E-2"), criteria);
 
-    if (failures.length > 0) {
-      const detail = failures
-        .map((o) => `\`${o.command}\` exited with code ${o.exitCode}`)
-        .join("; ");
-      const errEvidence = failures.flatMap((o) => o.stderr ? [o.stderr] : []);
-      criteria.push({
-        id: "E-1",
-        status: "BLOCK",
-        detail,
-        evidence: errEvidence,
-        fix: "Fix failing tests reported above before proceeding.",
-      });
-      return {
-        gate: "G5",
-        name: "Executability Valid",
-        status: "BLOCKED",
-        criteria,
-        durationMs: Date.now() - start,
-      };
-    }
-
-    const passed = outcomes.map((o) => `\`${o.command}\``).join(", ");
-    criteria.push({
-      id: "E-1",
-      status: "PASS",
-      detail: `${testFiles.length} test file(s) found. ${passed} exited 0.`,
-      evidence,
-    });
-  } else {
-    // Test files exist but no runner was detected or configured — warn, don't block.
-    criteria.push({
-      id: "E-1",
-      status: "WARNING",
-      detail: `${testFiles.length} test file(s) found but no test runner was detected.`,
-      evidence: testFiles.slice(0, 5).map((f) => relative(projectRoot, f)),
-      fix: "Set `test_commands` in spec-check.config.json to specify how to run the test suite.",
-    });
-  }
-
-  // ── E-2: Each Rule has a corresponding test ────────────────────────────────
-  const reqFile = findRequirementsFile(specPath);
-  const reqText = reqFile ? readFile(reqFile) : "";
-  const rules = reqText ? extractRules(reqText) : [];
-  const threshold = getThreshold(config, "E-2");
-  if (rules.length === 0) {
-    criteria.push({
-      id: "E-2",
-      status: "WARNING",
-      detail: "No parseable requirements rules were found to compare against tests.",
-      fix: "Ensure requirements.md contains `Rule R-N:` headings before using Gate 5 coverage checks.",
-    });
-  } else {
-    const coverage = findRuleCoverage(rules, testFiles, projectRoot, threshold);
-    const coveragePct = (coverage.covered.length / rules.length) * 100;
-    if (coverage.missing.length > 0) {
-      criteria.push({
-        id: "E-2",
-        status: "VIOLATION",
-        detail: `${coverage.missing.length}/${rules.length} rule(s) have no corresponding test. Coverage ${coveragePct.toFixed(1)}%.`,
-        evidence: coverage.missing.slice(0, 8).map((rule) => `${rule.id}: ${rule.text}`),
-        fix: "Add tests whose names or descriptions match each uncovered Rule, or reference the Rule ID directly in test titles.",
-      });
-    } else {
-      criteria.push({
-        id: "E-2",
-        status: "PASS",
-        detail: `All ${rules.length} rules have corresponding tests. Coverage ${coveragePct.toFixed(1)}%.`,
-        evidence: coverage.evidence.slice(0, 8),
-      });
-    }
-  }
-
-  // ── E-3: Tests use spec-style language ─────────────────────────────────────
   const specStyle = hasSpecStyleLanguage(testFiles);
   if (!specStyle.pass) {
-    criteria.push({
-      id: "E-3",
-      status: "WARNING",
-      detail: "No tests were found using spec-style language such as Given/When/Then or Scenario/Example wording.",
-      fix: "Prefer test names or descriptions that reflect spec language to preserve traceability.",
-    });
+    criteria.push({ id: "E-3", status: "WARNING", detail: "No tests were found using spec-style language such as Given/When/Then or Scenario/Example wording.", fix: "Prefer test names or descriptions that reflect spec language to preserve traceability." });
   } else {
-    criteria.push({
-      id: "E-3",
-      status: "PASS",
-      detail: "Spec-style language detected in test files.",
-      evidence: specStyle.evidence,
-    });
+    criteria.push({ id: "E-3", status: "PASS", detail: "Spec-style language detected in test files.", evidence: specStyle.evidence });
   }
 
-  const hasBlock = criteria.some((item) => item.status === "BLOCK");
-  const hasViolation = criteria.some((item) => item.status === "VIOLATION");
-  const hasWarning = criteria.some((item) => item.status === "WARNING");
-
-  const status: GateResult["status"] =
-    hasBlock ? "BLOCKED" :
-    hasViolation ? "FAILING" :
-    hasWarning ? "PASSING_WITH_WARNINGS" :
-    "PASS";
-
-  return {
-    gate: "G5",
-    name: "Executability Valid",
-    status,
-    criteria,
-    durationMs: Date.now() - start,
-  };
+  return { gate: "G5", name: "Executability Valid", status: resolveGate5Status(criteria), criteria, durationMs: Date.now() - start };
 }

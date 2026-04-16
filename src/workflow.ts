@@ -169,35 +169,57 @@ function detectOrphanedPrd(root: string): string | null {
   return null;
 }
 
+function hasMdFiles(dir: string): boolean {
+  return existsSync(dir) && readdirSafe(dir).some((f) => f.endsWith(".md"));
+}
+
+function isBootstrapPhase(root: string, hasStories: boolean, hasPrd: boolean): boolean {
+  if (hasStories || hasPrd) return false;
+  if (existsSync(join(root, "intent.md")) || existsSync(join(root, "requirements.md"))) return false;
+  return Boolean(detectOrphanedPrd(root));
+}
+
+function hasTestsDir(root: string): boolean {
+  if (existsSync(join(root, "tests"))) return true;
+  return readdirSafe(root).some((item) => /(?:^|\/)(test|tests)(?:\/|$)/.test(item));
+}
+
+function detectPhase(root: string, hasStories: boolean, hasPrd: boolean): string {
+  if (isBootstrapPhase(root, hasStories, hasPrd)) return "bootstrap";
+  if (!hasStories && !existsSync(join(root, "intent.md"))) return "intent";
+  if (!hasPrd && !existsSync(join(root, "requirements.md"))) return "requirements";
+  if (!hasMdFiles(join(root, "adr")) && !existsSync(join(root, "design.md"))) return "design";
+  if (!existsSync(join(root, "tasks.md"))) return "tasks";
+  if (!hasTestsDir(root)) return "executability";
+  return "implementation";
+}
+
 function inferPhase(projectRoot: string, state: AgentState): string {
   if (state.current_phase) return state.current_phase;
   if (state.status === "completed") return "completed";
   const root = resolve(projectRoot);
-
-  const storiesDir = join(root, "stories");
-  const hasStories = existsSync(storiesDir) && readdirSafe(storiesDir).some((f) => f.endsWith(".md"));
-  const prdDir = join(root, "prd");
-  const hasPrd = existsSync(prdDir) && readdirSafe(prdDir).some((f) => f.endsWith(".md"));
-
-  // Bootstrap: PRD found outside prd/ but directory structure not yet set up
-  if (!hasStories && !hasPrd && !existsSync(join(root, "intent.md")) && !existsSync(join(root, "requirements.md"))) {
-    if (detectOrphanedPrd(root)) return "bootstrap";
-  }
-
-  if (!hasStories && !existsSync(join(root, "intent.md"))) return "intent";
-  if (!hasPrd && !existsSync(join(root, "requirements.md"))) return "requirements";
-
-  const adrDir = join(root, "adr");
-  const hasAdr = existsSync(adrDir) && readdirSafe(adrDir).some((f) => f.endsWith(".md"));
-  if (!hasAdr && !existsSync(join(root, "design.md"))) return "design";
-
-  if (!existsSync(join(root, "tasks.md"))) return "tasks";
-  if (!existsSync(join(root, "tests")) && !readdirSafe(root).some((item) => /(?:^|\/)(test|tests)(?:\/|$)/.test(item))) return "executability";
-  return "implementation";
+  const hasStories = hasMdFiles(join(root, "stories"));
+  const hasPrd = hasMdFiles(join(root, "prd"));
+  return detectPhase(root, hasStories, hasPrd);
 }
 
 function readdirSafe(root: string): string[] {
   try { return readdirSync(root); } catch { return []; }
+}
+
+const PHASE_NEXT: Record<string, string[]> = {
+  bootstrap: ["scaffold_spec"],
+  intent: ["gate_check:G1"],
+  requirements: ["gate_check:G2"],
+  design: ["gate_check:G3"],
+  tasks: ["gate_check:G4"],
+  executability: ["gate_check:G5"],
+};
+
+function resolveCompletedCheckNext(lastCheck: string | null): string[] | null {
+  if (lastCheck === "G1" || lastCheck === "G2" || lastCheck === "G3" || lastCheck === "G4") return ["run_all"];
+  if (lastCheck === "G5" || lastCheck === "run_all") return ["metrics"];
+  return null;
 }
 
 // After an individual gate passes, redirect to run_all rather than chaining gate_check
@@ -205,18 +227,10 @@ function readdirSafe(root: string): string[] {
 // is absent and later gates would BLOCK immediately anyway.
 function resolveMustCallNext(state: AgentState, phase: string, implementationTouched: boolean): string[] {
   if (state.required_next_checks.length > 0) return state.required_next_checks;
-  if (state.last_completed_check === "G1" ||
-      state.last_completed_check === "G2" ||
-      state.last_completed_check === "G3" ||
-      state.last_completed_check === "G4") return ["run_all"];
-  if (state.last_completed_check === "G5") return ["metrics"];
-  if (state.last_completed_check === "run_all") return ["metrics"];
-  if (phase === "bootstrap") return ["scaffold_spec"];
-  if (phase === "intent") return ["gate_check:G1"];
-  if (phase === "requirements") return ["gate_check:G2"];
-  if (phase === "design") return ["gate_check:G3"];
-  if (phase === "tasks") return ["gate_check:G4"];
-  if (phase === "executability") return ["gate_check:G5"];
+  const fromCheck = resolveCompletedCheckNext(state.last_completed_check);
+  if (fromCheck) return fromCheck;
+  const fromPhase = PHASE_NEXT[phase];
+  if (fromPhase) return fromPhase;
   if (implementationTouched) return ["metrics"];
   return ["run_all"];
 }

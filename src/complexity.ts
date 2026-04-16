@@ -382,46 +382,65 @@ function childNodes(node: Record<string, unknown>): Array<Record<string, unknown
   return out;
 }
 
-function controlIncrement(type: string, node: Record<string, unknown>): { cc: number; cognitive: number; enter: boolean; alternateSameLevel?: boolean } {
-  switch (type) {
-    case "IfStatement":
-      return { cc: 1, cognitive: 1, enter: true, alternateSameLevel: true };
-    case "ForStatement":
-    case "ForInStatement":
-    case "ForOfStatement":
-    case "WhileStatement":
-    case "DoWhileStatement":
-    case "CatchClause":
-      return { cc: 1, cognitive: 1, enter: true };
-    case "SwitchCase":
-      return (node.test ? { cc: 1, cognitive: 1, enter: true } : { cc: 0, cognitive: 0, enter: true });
-    case "ConditionalExpression":
-      return { cc: 1, cognitive: 1, enter: true };
-    case "LogicalExpression": {
-      const op = String(node.operator ?? "");
-      return op === "&&" || op === "||" ? { cc: 1, cognitive: 1, enter: false } : { cc: 0, cognitive: 0, enter: false };
-    }
-    default:
-      return { cc: 0, cognitive: 0, enter: false };
+type ControlResult = { cc: number; cognitive: number; enter: boolean; alternateSameLevel?: boolean };
+
+const CONTROL_MAP: Record<string, ControlResult> = {
+  "IfStatement": { cc: 1, cognitive: 1, enter: true, alternateSameLevel: true },
+  "ForStatement": { cc: 1, cognitive: 1, enter: true },
+  "ForInStatement": { cc: 1, cognitive: 1, enter: true },
+  "ForOfStatement": { cc: 1, cognitive: 1, enter: true },
+  "WhileStatement": { cc: 1, cognitive: 1, enter: true },
+  "DoWhileStatement": { cc: 1, cognitive: 1, enter: true },
+  "CatchClause": { cc: 1, cognitive: 1, enter: true },
+  "ConditionalExpression": { cc: 1, cognitive: 1, enter: true },
+};
+const ZERO_RESULT: ControlResult = { cc: 0, cognitive: 0, enter: false };
+
+function switchCaseIncrement(node: Record<string, unknown>): ControlResult {
+  const hasBranch = Boolean(node.test);
+  return { cc: hasBranch ? 1 : 0, cognitive: hasBranch ? 1 : 0, enter: true };
+}
+
+function logicalExpressionIncrement(node: Record<string, unknown>): ControlResult {
+  const op = String(node.operator ?? "");
+  if (op === "&&" || op === "||") return { cc: 1, cognitive: 1, enter: false };
+  return ZERO_RESULT;
+}
+
+function controlIncrement(type: string, node: Record<string, unknown>): ControlResult {
+  const mapped = CONTROL_MAP[type];
+  if (mapped) return mapped;
+  if (type === "SwitchCase") return switchCaseIncrement(node);
+  if (type === "LogicalExpression") return logicalExpressionIncrement(node);
+  return ZERO_RESULT;
+}
+
+function functionNameFromAssignment(left: Record<string, unknown>): string {
+  const property = isNode(left.property) ? left.property : undefined;
+  return String(left.name ?? property?.name ?? property?.value ?? "anonymous");
+}
+
+function functionNameFromParent(parent: Record<string, unknown>): string {
+  const type = String(parent.type ?? "");
+  if (type === "VariableDeclarator" && isNode(parent.id)) {
+    return String((parent.id as Record<string, unknown>).name ?? "anonymous");
   }
+  if ((type === "Property" || type === "MethodDefinition") && isNode(parent.key)) {
+    const key = parent.key as Record<string, unknown>;
+    return String(key.name ?? key.value ?? "anonymous");
+  }
+  if (type === "AssignmentExpression" && isNode(parent.left)) {
+    return functionNameFromAssignment(parent.left as Record<string, unknown>);
+  }
+  return "anonymous";
 }
 
 function functionName(node: Record<string, unknown>, parent?: Record<string, unknown>): string {
   if (node.type === "FunctionDeclaration" && isNode(node.id)) {
-    return String(node.id.name ?? "anonymous");
+    return String((node.id as Record<string, unknown>).name ?? "anonymous");
   }
   if ((node.type === "FunctionExpression" || node.type === "ArrowFunctionExpression") && parent) {
-    if (parent.type === "VariableDeclarator" && isNode(parent.id)) {
-      return String(parent.id.name ?? "anonymous");
-    }
-    if ((parent.type === "Property" || parent.type === "MethodDefinition") && isNode(parent.key)) {
-      return String(parent.key.name ?? parent.key.value ?? "anonymous");
-    }
-    if (parent.type === "AssignmentExpression" && isNode(parent.left)) {
-      const left = parent.left as Record<string, unknown>;
-      const property = isNode(left.property) ? left.property : undefined;
-      return String(left.name ?? property?.name ?? property?.value ?? "anonymous");
-    }
+    return functionNameFromParent(parent);
   }
   return "anonymous";
 }
@@ -435,7 +454,21 @@ function analyzeFunctionNode(source: string, relFile: string, language: Language
   let cognitive = 0;
   let maxNesting = 0;
 
-  function visit(current: Record<string, unknown>, nesting: number, parent?: Record<string, unknown>) {
+  function computeNextNesting(
+    enter: boolean,
+    alternateSameLevel: boolean | undefined,
+    current: Record<string, unknown>,
+    child: Record<string, unknown>,
+    nesting: number
+  ): number {
+    if (!enter) return nesting;
+    if (alternateSameLevel && current.type === "IfStatement" && child === current.alternate && isNode(current.alternate) && (current.alternate as Record<string, unknown>).type === "IfStatement") {
+      return nesting;
+    }
+    return nesting + 1;
+  }
+
+  function visit(current: Record<string, unknown>, nesting: number) {
     if (current !== body && /Function(Expression|Declaration)$|ArrowFunctionExpression/.test(String(current.type))) {
       return;
     }
@@ -443,18 +476,13 @@ function analyzeFunctionNode(source: string, relFile: string, language: Language
     cc += ccInc;
     cognitive += cogInc ? cogInc + (enter ? nesting : 0) : 0;
     if (enter) maxNesting = Math.max(maxNesting, nesting + 1);
-
     for (const child of childNodes(current)) {
-      let nextNesting = nesting;
-      if (enter) nextNesting = nesting + 1;
-      if (alternateSameLevel && current.type === "IfStatement" && child === current.alternate && isNode(current.alternate) && current.alternate.type === "IfStatement") {
-        nextNesting = nesting;
-      }
-      visit(child, nextNesting, current);
+      visit(child, computeNextNesting(enter, alternateSameLevel, current, child, nesting));
     }
   }
 
   visit(body, 0);
+
 
   const params = Array.isArray(node.params) ? node.params.length : 0;
   return {
@@ -705,30 +733,33 @@ function readHistory(dir: string): HistoricalMetric[] {
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 }
 
+function applyDeltas(metric: ComplexityMetric, last: HistoricalMetric): void {
+  metric.cc_delta = metric.cc - last.cc;
+  metric.cognitive_delta = metric.cognitive === null || last.cognitive === null ? null : metric.cognitive - last.cognitive;
+  metric.length_delta = metric.length - last.length;
+  metric.nesting_delta = metric.nesting === null || last.nesting === null ? null : metric.nesting - last.nesting;
+}
+
+function computeTrendFlags(metric: ComplexityMetric, prior: HistoricalMetric[]): void {
+  if (prior.length < 3) return;
+  const recent = prior.slice(-3);
+  const ccSeries = [...recent.map((h) => h.cc), metric.cc];
+  const lenSeries = [...recent.map((h) => h.length), metric.length];
+  const cogSeries = [...recent.map((h) => h.cognitive), metric.cognitive];
+  const nestSeries = [...recent.map((h) => h.nesting), metric.nesting];
+  const isIncreasing = (series: number[]) => series.every((v, i) => i === 0 || v > series[i - 1]!);
+  const allNumbers = (series: Array<number | null>): series is number[] => series.every((v) => v !== null);
+  if (isIncreasing(ccSeries)) metric.trend_flags.push("CC-6");
+  if (allNumbers(cogSeries) && isIncreasing(cogSeries)) metric.trend_flags.push("CC-7");
+  if (isIncreasing(lenSeries)) metric.trend_flags.push("CC-8");
+  if (allNumbers(nestSeries) && isIncreasing(nestSeries)) metric.trend_flags.push("CC-9");
+}
+
 function applyHistory(metric: ComplexityMetric, history: HistoricalMetric[]): void {
   const prior = history.filter((item) => item.signature === metric.signature);
   if (prior.length === 0) return;
-  const last = prior[prior.length - 1]!;
-  metric.cc_delta = metric.cc - last.cc;
-  metric.cognitive_delta =
-    metric.cognitive === null || last.cognitive === null ? null : metric.cognitive - last.cognitive;
-  metric.length_delta = metric.length - last.length;
-  metric.nesting_delta =
-    metric.nesting === null || last.nesting === null ? null : metric.nesting - last.nesting;
-
-  if (prior.length < 3) return;
-  const recent = prior.slice(-3);
-  const ccSeries = [...recent.map((item) => item.cc), metric.cc];
-  const lenSeries = [...recent.map((item) => item.length), metric.length];
-  const cogSeries = [...recent.map((item) => item.cognitive), metric.cognitive];
-  const nestSeries = [...recent.map((item) => item.nesting), metric.nesting];
-  const increasing = (series: number[]) => series.every((value, idx) => idx === 0 || value > series[idx - 1]!);
-  const allNumbers = (series: Array<number | null>): series is number[] => series.every((value) => value !== null);
-
-  if (increasing(ccSeries)) metric.trend_flags.push("CC-6");
-  if (allNumbers(cogSeries) && increasing(cogSeries)) metric.trend_flags.push("CC-7");
-  if (increasing(lenSeries)) metric.trend_flags.push("CC-8");
-  if (allNumbers(nestSeries) && increasing(nestSeries)) metric.trend_flags.push("CC-9");
+  applyDeltas(metric, prior[prior.length - 1]!);
+  computeTrendFlags(metric, prior);
 }
 
 function statusFromCriteria(criteria: CriterionResult[]): GateStatus {
@@ -738,88 +769,127 @@ function statusFromCriteria(criteria: CriterionResult[]): GateStatus {
   return "PASS";
 }
 
-function buildCriteria(metrics: ComplexityMetric[], fileResults: ComplexityFileResult[], config: ResolvedConfig, notes: ComplexityNote[]): CriterionResult[] {
-  const criteria: CriterionResult[] = [];
-  const hasUnsupportedCognitive = metrics.some((item) => item.cognitive === null);
-  const hasUnsupportedNesting = metrics.some((item) => item.nesting === null);
-  const cc1 = metrics.filter((item) => item.cc > Number(getThreshold(config, "CC-1")));
-  criteria.push(cc1.length > 0 ? {
-    id: "CC-1",
-    status: "VIOLATION",
-    detail: `${cc1.length} function(s) exceed the CC threshold.`,
-    evidence: cc1.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} CC=${item.cc}`),
-    fix: "Reduce branching complexity or split the function into smaller units.",
-  } : { id: "CC-1", status: "PASS", detail: "No function exceeds the CC threshold." });
+function buildCC1Criterion(metrics: ComplexityMetric[], config: ResolvedConfig): CriterionResult {
+  const flagged = metrics.filter((item) => item.cc > Number(getThreshold(config, "CC-1")));
+  if (flagged.length > 0) {
+    return { id: "CC-1", status: "VIOLATION", detail: `${flagged.length} function(s) exceed the CC threshold.`, evidence: flagged.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} CC=${item.cc}`), fix: "Reduce branching complexity or split the function into smaller units." };
+  }
+  return { id: "CC-1", status: "PASS", detail: "No function exceeds the CC threshold." };
+}
 
-  const cc2Threshold = Number(getThreshold(config, "CC-2"));
-  const cc2 = metrics.filter((item) => item.cc > cc2Threshold && item.scenario_count < item.cc);
-  criteria.push(cc2.length > 0 ? {
-    id: "CC-2",
-    status: "WARNING",
-    detail: `${cc2.length} high-CC function(s) have fewer spec scenarios than their CC value.`,
-    evidence: cc2.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} scenarios=${item.scenario_count}, cc=${item.cc}`),
-    fix: "Add spec examples covering the missing behavioral branches.",
-  } : { id: "CC-2", status: "PASS", detail: "Spec scenario coverage is at or above CC for high-complexity functions." });
+function buildCC2Criterion(metrics: ComplexityMetric[], config: ResolvedConfig): CriterionResult {
+  const threshold = Number(getThreshold(config, "CC-2"));
+  const flagged = metrics.filter((item) => item.cc > threshold && item.scenario_count < item.cc);
+  if (flagged.length > 0) {
+    return { id: "CC-2", status: "WARNING", detail: `${flagged.length} high-CC function(s) have fewer spec scenarios than their CC value.`, evidence: flagged.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} scenarios=${item.scenario_count}, cc=${item.cc}`), fix: "Add spec examples covering the missing behavioral branches." };
+  }
+  return { id: "CC-2", status: "PASS", detail: "Spec scenario coverage is at or above CC for high-complexity functions." };
+}
 
-  const cc3Threshold = Number(getThreshold(config, "CC-3"));
-  const cc3 = fileResults.filter((item) => item.average_cc > cc3Threshold);
-  criteria.push(cc3.length > 0 ? {
-    id: "CC-3",
-    status: "WARNING",
-    detail: `${cc3.length} file(s) exceed the average CC threshold.`,
-    evidence: cc3.slice(0, 5).map((item) => `${item.file} avg_cc=${item.average_cc.toFixed(2)}`),
-    fix: "Reduce per-file branching concentration by splitting or simplifying the functions in these files.",
-  } : { id: "CC-3", status: "PASS", detail: "Average CC per file is within threshold." });
+function buildCC3Criterion(fileResults: ComplexityFileResult[], config: ResolvedConfig): CriterionResult {
+  const threshold = Number(getThreshold(config, "CC-3"));
+  const flagged = fileResults.filter((item) => item.average_cc > threshold);
+  if (flagged.length > 0) {
+    return { id: "CC-3", status: "WARNING", detail: `${flagged.length} file(s) exceed the average CC threshold.`, evidence: flagged.slice(0, 5).map((item) => `${item.file} avg_cc=${item.average_cc.toFixed(2)}`), fix: "Reduce per-file branching concentration by splitting or simplifying the functions in these files." };
+  }
+  return { id: "CC-3", status: "PASS", detail: "Average CC per file is within threshold." };
+}
 
-  const cc4Threshold = Number(getThreshold(config, "CC-4"));
-  const supportedNesting = metrics.filter((item) => item.nesting !== null);
-  const cc4 = supportedNesting.filter((item) => (item.nesting ?? 0) > cc4Threshold);
-  criteria.push(cc4.length > 0 ? {
-    id: "CC-4",
-    status: "WARNING",
-    detail: `${cc4.length} function(s) exceed the nesting threshold.`,
-    evidence: cc4.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} nesting=${item.nesting}`),
-    fix: "Flatten control flow with guard clauses, extraction, or early returns.",
-  } : supportedNesting.length === 0 ? {
-    id: "CC-4",
-    status: "PASS",
-    detail: "Nesting depth is unsupported for the analyzed Tier 2 languages.",
-  } : { id: "CC-4", status: "PASS", detail: "Nesting depth is within threshold." });
+function buildCC4Criterion(metrics: ComplexityMetric[], config: ResolvedConfig): CriterionResult {
+  const threshold = Number(getThreshold(config, "CC-4"));
+  const supported = metrics.filter((item) => item.nesting !== null);
+  const flagged = supported.filter((item) => (item.nesting ?? 0) > threshold);
+  if (flagged.length > 0) {
+    return { id: "CC-4", status: "WARNING", detail: `${flagged.length} function(s) exceed the nesting threshold.`, evidence: flagged.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} nesting=${item.nesting}`), fix: "Flatten control flow with guard clauses, extraction, or early returns." };
+  }
+  if (supported.length === 0) {
+    return { id: "CC-4", status: "PASS", detail: "Nesting depth is unsupported for the analyzed Tier 2 languages." };
+  }
+  return { id: "CC-4", status: "PASS", detail: "Nesting depth is within threshold." };
+}
 
-  const cc5Threshold = Number(getThreshold(config, "CC-5"));
-  const cc5 = metrics.filter((item) => item.param_count > cc5Threshold);
-  criteria.push(cc5.length > 0 ? {
-    id: "CC-5",
-    status: "WARNING",
-    detail: `${cc5.length} function(s) exceed the parameter-count threshold.`,
-    evidence: cc5.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} params=${item.param_count}`),
-    fix: "Collapse related parameters into a value object or split responsibilities.",
-  } : { id: "CC-5", status: "PASS", detail: "Parameter count is within threshold." });
+function buildCC5Criterion(metrics: ComplexityMetric[], config: ResolvedConfig): CriterionResult {
+  const threshold = Number(getThreshold(config, "CC-5"));
+  const flagged = metrics.filter((item) => item.param_count > threshold);
+  if (flagged.length > 0) {
+    return { id: "CC-5", status: "WARNING", detail: `${flagged.length} function(s) exceed the parameter-count threshold.`, evidence: flagged.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name} params=${item.param_count}`), fix: "Collapse related parameters into a value object or split responsibilities." };
+  }
+  return { id: "CC-5", status: "PASS", detail: "Parameter count is within threshold." };
+}
 
+function buildTrendDetail(
+  id: "CC-6" | "CC-7" | "CC-8" | "CC-9",
+  notes: ComplexityNote[],
+  hasUnsupportedCognitive: boolean,
+  hasUnsupportedNesting: boolean
+): string {
+  if (id === "CC-7" && hasUnsupportedCognitive) return "Trend skipped where cognitive complexity is unsupported for Tier 2 languages.";
+  if (id === "CC-9" && hasUnsupportedNesting) return "Trend skipped where nesting depth is unsupported for Tier 2 languages.";
+  if ((id === "CC-7" || id === "CC-9") && notes.some((n) => n.code === "DEPENDENCY_MISSING")) {
+    return `Trend skipped where ${id === "CC-7" ? "cognitive complexity" : "nesting depth"} is unsupported for Tier 2 languages.`;
+  }
+  if (notes.some((n) => n.code === "NO_HISTORY")) return "Insufficient history to evaluate sustained trend.";
+  return "No sustained increasing trend detected.";
+}
+
+function buildTrendCriteria(metrics: ComplexityMetric[], notes: ComplexityNote[], hasUnsupportedCognitive: boolean, hasUnsupportedNesting: boolean): CriterionResult[] {
+  const result: CriterionResult[] = [];
   for (const id of ["CC-6", "CC-7", "CC-8", "CC-9"] as const) {
     const flagged = metrics.filter((item) => item.trend_flags.includes(id));
-    criteria.push(flagged.length > 0 ? {
-      id,
-      status: "WARNING",
-      detail: `${flagged.length} function(s) show a sustained increasing ${id.replace("CC-", "").toLowerCase()} trend.`,
-      evidence: flagged.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name}`),
-      fix: "Review recent refactors and reduce the sustained growth in this metric.",
-    } : {
-      id,
-      status: "PASS",
-      detail: id === "CC-7" && hasUnsupportedCognitive
-        ? "Trend skipped where cognitive complexity is unsupported for Tier 2 languages."
-        : id === "CC-9" && hasUnsupportedNesting
-        ? "Trend skipped where nesting depth is unsupported for Tier 2 languages."
-        : (id === "CC-7" || id === "CC-9") && notes.some((note) => note.code === "DEPENDENCY_MISSING")
-        ? `Trend skipped where ${id === "CC-7" ? "cognitive complexity" : "nesting depth"} is unsupported for Tier 2 languages.`
-        : notes.some((note) => note.code === "NO_HISTORY")
-        ? "Insufficient history to evaluate sustained trend."
-        : "No sustained increasing trend detected.",
-    });
+    if (flagged.length > 0) {
+      result.push({ id, status: "WARNING", detail: `${flagged.length} function(s) show a sustained increasing ${id.replace("CC-", "").toLowerCase()} trend.`, evidence: flagged.slice(0, 5).map((item) => `${item.file}:${item.line} ${item.name}`), fix: "Review recent refactors and reduce the sustained growth in this metric." });
+    } else {
+      result.push({ id, status: "PASS", detail: buildTrendDetail(id, notes, hasUnsupportedCognitive, hasUnsupportedNesting) });
+    }
   }
+  return result;
+}
 
-  return criteria;
+function buildCriteria(metrics: ComplexityMetric[], fileResults: ComplexityFileResult[], config: ResolvedConfig, notes: ComplexityNote[]): CriterionResult[] {
+  const hasUnsupportedCognitive = metrics.some((item) => item.cognitive === null);
+  const hasUnsupportedNesting = metrics.some((item) => item.nesting === null);
+  return [
+    buildCC1Criterion(metrics, config),
+    buildCC2Criterion(metrics, config),
+    buildCC3Criterion(fileResults, config),
+    buildCC4Criterion(metrics, config),
+    buildCC5Criterion(metrics, config),
+    ...buildTrendCriteria(metrics, notes, hasUnsupportedCognitive, hasUnsupportedNesting),
+  ];
+}
+
+function analyzeFile(
+  file: string,
+  root: string,
+  pyAvailable: boolean,
+  goIsAvailable: boolean,
+  metrics: ComplexityMetric[],
+  tier2Files: string[],
+  notes: ComplexityNote[]
+): void {
+  const language = EXTENSIONS[extname(file).toLowerCase()];
+  if (!language) return;
+  try {
+    if (language === "typescript" || language === "javascript") {
+      metrics.push(...analyzeTsJsFile(file, root));
+    } else if (language === "python") {
+      if (!pyAvailable) {
+        notes.push({ code: "RUNTIME_NOT_FOUND", detail: "Python runtime not found; Python files were skipped.", file: relative(root, file) });
+        return;
+      }
+      metrics.push(...analyzePythonFile(file, root));
+    } else if (language === "go") {
+      if (!goIsAvailable) {
+        notes.push({ code: "RUNTIME_NOT_FOUND", detail: "Go runtime not found; Go files were skipped.", file: relative(root, file) });
+        return;
+      }
+      metrics.push(...analyzeGoFile(file, root));
+    } else {
+      tier2Files.push(file);
+    }
+  } catch (error) {
+    notes.push({ code: "ANALYSIS_FAILED", detail: String(error), file: relative(root, file) });
+  }
 }
 
 export async function runComplexity(service: ServiceInfo, config: ResolvedConfig, llm: ActorIdentity): Promise<ComplexityReport> {
@@ -834,29 +904,7 @@ export async function runComplexity(service: ServiceInfo, config: ResolvedConfig
   const tier2Files: string[] = [];
 
   for (const file of files) {
-    const language = EXTENSIONS[extname(file).toLowerCase()];
-    if (!language) continue;
-    try {
-      if ((language === "typescript" || language === "javascript")) {
-        metrics.push(...analyzeTsJsFile(file, root));
-      } else if (language === "python") {
-        if (!pyAvailable) {
-          notes.push({ code: "RUNTIME_NOT_FOUND", detail: "Python runtime not found; Python files were skipped.", file: relative(root, file) });
-          continue;
-        }
-        metrics.push(...analyzePythonFile(file, root));
-      } else if (language === "go") {
-        if (!goIsAvailable) {
-          notes.push({ code: "RUNTIME_NOT_FOUND", detail: "Go runtime not found; Go files were skipped.", file: relative(root, file) });
-          continue;
-        }
-        metrics.push(...analyzeGoFile(file, root));
-      } else {
-        tier2Files.push(file);
-      }
-    } catch (error) {
-      notes.push({ code: "ANALYSIS_FAILED", detail: String(error), file: relative(root, file) });
-    }
+    analyzeFile(file, root, pyAvailable, goIsAvailable, metrics, tier2Files, notes);
   }
 
   const tier2 = analyzeLizardFiles(tier2Files, root);

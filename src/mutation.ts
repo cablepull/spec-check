@@ -318,37 +318,21 @@ function makeMinimalStrykerConfig(scopeRoot: string, scopeFiles: string[]): { pa
   return { path: configPath, generated: true };
 }
 
-function parseStryker(scopeRoot: string, stdout: string, notes: MutationNote[]): RawMutationResult {
-  const scoreMatch = stdout.match(/Mutation score[:\s]+(\d+(?:\.\d+)?)%/i);
-  const killedMatch = stdout.match(/Killed[:\s]+(\d+)/i);
-  const survivedMatch = stdout.match(/Survived[:\s]+(\d+)/i);
-  const timeoutMatch = stdout.match(/Timeout[:\s]+(\d+)/i);
-  const totalMutants = (killedMatch ? Number(killedMatch[1]) : 0) + (survivedMatch ? Number(survivedMatch[1]) : 0) + (timeoutMatch ? Number(timeoutMatch[1]) : 0);
-  const jsonCandidates = [
-    join(scopeRoot, "reports", "mutation", "mutation.json"),
-    join(scopeRoot, "reports", "stryker", "mutation.json"),
-  ];
+type StrykerMutant = { status?: string; mutatorName?: string; replacement?: string; location?: { start?: { line?: number } } };
+type StrykerJsonReport = { files?: Record<string, { mutants?: StrykerMutant[] }> };
 
+function parseFunctionsFromStrykerJson(candidates: string[], notes: MutationNote[]): MutationFunctionResult[] {
   const functions: MutationFunctionResult[] = [];
-  for (const candidate of jsonCandidates) {
+  for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
     try {
-      const parsed = JSON.parse(readText(candidate)) as {
-        files?: Record<string, { mutants?: Array<{ status?: string; mutatorName?: string; replacement?: string; location?: { start?: { line?: number } } }> }>;
-      };
+      const parsed = JSON.parse(readText(candidate)) as StrykerJsonReport;
       for (const [file, value] of Object.entries(parsed.files ?? {})) {
         const grouped = new Map<string, MutationFunctionResult>();
         for (const mutant of value.mutants ?? []) {
           const line = mutant.location?.start?.line ?? 1;
           const key = `${file}:${line}`;
-          const current = grouped.get(key) ?? {
-            name: `${basename(file)}:${line}`,
-            file,
-            score: null,
-            critical: false,
-            surviving_mutants: [],
-            cc: null,
-          };
+          const current = grouped.get(key) ?? { name: `${basename(file)}:${line}`, file, score: null, critical: false, surviving_mutants: [], cc: null };
           if (mutant.status === "Survived") {
             current.surviving_mutants.push(mutant.mutatorName ?? mutant.replacement ?? "survived mutant");
           }
@@ -361,16 +345,27 @@ function parseStryker(scopeRoot: string, stdout: string, notes: MutationNote[]):
       notes.push({ code: "MT_PARSE_WARN", detail: `Unable to parse Stryker JSON report at ${candidate}` });
     }
   }
+  return functions;
+}
 
+function parseStryker(scopeRoot: string, stdout: string, notes: MutationNote[]): RawMutationResult {
+  const scoreMatch = stdout.match(/Mutation score[:\s]+(\d+(?:\.\d+)?)%/i);
+  const killedMatch = stdout.match(/Killed[:\s]+(\d+)/i);
+  const survivedMatch = stdout.match(/Survived[:\s]+(\d+)/i);
+  const timeoutMatch = stdout.match(/Timeout[:\s]+(\d+)/i);
+  const killed = killedMatch ? Number(killedMatch[1]) : 0;
+  const survived = survivedMatch ? Number(survivedMatch[1]) : 0;
+  const timeout = timeoutMatch ? Number(timeoutMatch[1]) : 0;
+  const jsonCandidates = [join(scopeRoot, "reports", "mutation", "mutation.json"), join(scopeRoot, "reports", "stryker", "mutation.json")];
   return {
     tool: "stryker",
     incremental: /--incremental/.test(stdout),
-    total_mutants: totalMutants,
-    killed: killedMatch ? Number(killedMatch[1]) : 0,
-    survived: survivedMatch ? Number(survivedMatch[1]) : 0,
-    timeout: timeoutMatch ? Number(timeoutMatch[1]) : 0,
+    total_mutants: killed + survived + timeout,
+    killed,
+    survived,
+    timeout,
     score: scoreMatch ? Number(scoreMatch[1]) : null,
-    functions,
+    functions: parseFunctionsFromStrykerJson(jsonCandidates, notes),
     notes,
     raw_output: stdout,
   };

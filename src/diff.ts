@@ -106,17 +106,28 @@ function isHotfix(message: string): boolean {
   return /\b(hotfix|fix:|bugfix)\b/i.test(message);
 }
 
+const EXACT_FILE_CATEGORIES: Record<string, ChangeCategory> = {
+  "intent.md": "intent",
+  "requirements.md": "requirements",
+  "design.md": "design",
+  "tasks.md": "tasks",
+};
+
+const DIR_CATEGORIES: Array<[string, ChangeCategory]> = [
+  ["prd/", "prd"],
+  ["stories/", "stories"],
+  ["rca/", "rca"],
+  ["adr/", "adr"],
+];
+
 function categoryFor(file: string): ChangeCategory {
   const normalized = file.replace(/\\/g, "/");
   const base = normalized.split("/").pop() ?? normalized;
-  if (normalized === "intent.md") return "intent";
-  if (normalized === "requirements.md") return "requirements";
-  if (normalized === "design.md") return "design";
-  if (normalized === "tasks.md") return "tasks";
-  if (normalized.startsWith("prd/") && !normalized.startsWith("prd/archive/")) return "prd";
-  if (normalized.startsWith("stories/") && !normalized.startsWith("stories/archive/")) return "stories";
-  if (normalized.startsWith("rca/") && !normalized.startsWith("rca/archive/")) return "rca";
-  if (normalized.startsWith("adr/") && !normalized.startsWith("adr/archive/")) return "adr";
+  const exact = EXACT_FILE_CATEGORIES[normalized];
+  if (exact) return exact;
+  for (const [prefix, category] of DIR_CATEGORIES) {
+    if (normalized.startsWith(prefix) && !normalized.startsWith(`${prefix}archive/`)) return category;
+  }
   if (DEPENDENCY_FILES.has(base)) return "dependencies";
   if (/(__tests__\/|\/test\/|\.test\.|\.spec\.)/i.test(normalized)) return "tests";
   if (/^(src|lib|cmd)\//.test(normalized) || /\.(go|ts|tsx|js|jsx|py|java|rb|rs|c|cc|cpp|cxx|cs|swift|scala|kt)$/.test(normalized)) return "code";
@@ -220,100 +231,81 @@ function populateCategories(files: DiffFileChange[], categories: DiffReport["cat
   for (const file of files) categories[file.category].push(file.path);
 }
 
+function addR26Criterion(criteria: CriterionResult[], categories: DiffReport["categories"], hotfix: boolean): void {
+  if (categories.code.length === 0) return;
+  const storyOrRcaChanged = categories.stories.length > 0 || categories.rca.length > 0;
+  if (!storyOrRcaChanged && !hotfix) {
+    criteria.push({ id: "R-26", status: "VIOLATION", detail: "Code changes are untraceable because no story or RCA changed in the same diff.", evidence: categories.code, fix: "Add or update a story, or create an RCA for a hotfix path before landing code changes." });
+  } else {
+    criteria.push({ id: "R-26", status: "PASS", detail: hotfix ? "Code changes are marked as hotfix-compatible by commit message." : "Code changes are accompanied by a story or RCA diff." });
+  }
+}
+
+function addCodeTestsCriterion(criteria: CriterionResult[], categories: DiffReport["categories"]): void {
+  if (categories.code.length === 0) return;
+  if (categories.tests.length === 0) {
+    criteria.push({ id: "DIFF-CODE-TESTS", status: "WARNING", detail: "Code changed without corresponding test changes.", evidence: categories.code, fix: "Add or update tests, or re-run executability/quality checks for the changed code path." });
+  } else {
+    criteria.push({ id: "DIFF-CODE-TESTS", status: "PASS", detail: "Code changes include matching test changes." });
+  }
+}
+
+function addPrdCompileCriterion(criteria: CriterionResult[], categories: DiffReport["categories"]): void {
+  if (categories.prd.length === 0) return;
+  criteria.push({ id: "DIFF-PRD-COMPILE", status: "VIOLATION", detail: `${categories.prd.length} PRD file(s) changed. requirements.md must be recompiled.`, evidence: categories.prd, fix: "Run compile_requirements with write:true to regenerate requirements.md from all prd/ files, then re-run G2 and G3." });
+}
+
+function addStoryReqCriterion(criteria: CriterionResult[], categories: DiffReport["categories"], reqOrPrdChanged: boolean): void {
+  if (categories.stories.length === 0) return;
+  if (!reqOrPrdChanged) {
+    criteria.push({ id: "DIFF-STORY-REQ", status: "VIOLATION", detail: "Stories changed without corresponding PRD or requirement updates.", evidence: categories.stories, fix: "Update the relevant prd/ file and run compile_requirements, or update requirements.md directly." });
+  } else {
+    criteria.push({ id: "DIFF-STORY-REQ", status: "PASS", detail: "Story changes include PRD/requirement updates." });
+  }
+}
+
+function addReqDesignCriterion(criteria: CriterionResult[], categories: DiffReport["categories"], reqChanged: boolean): void {
+  if (!reqChanged) return;
+  const designChanged = categories.design.length > 0 || categories.adr.length > 0;
+  if (!designChanged) {
+    criteria.push({ id: "DIFF-REQ-DESIGN", status: "WARNING", detail: "PRD/requirements changed without ADR changes; architecture decisions may be stale.", fix: "Review adr/ and update or add ADR files if requirement changes introduce new architectural decisions." });
+  } else {
+    criteria.push({ id: "DIFF-REQ-DESIGN", status: "PASS", detail: "PRD/requirement changes include ADR updates." });
+  }
+}
+
+function addReqTasksCriterion(criteria: CriterionResult[], categories: DiffReport["categories"], reqChanged: boolean): void {
+  if (!reqChanged) return;
+  if (categories.tasks.length === 0) {
+    criteria.push({ id: "DIFF-REQ-TASKS", status: "WARNING", detail: "PRD/requirements changed without task updates; task coverage may be stale.", fix: "Review tasks.md and add tasks for any new features or rules introduced by this PRD change." });
+  } else {
+    criteria.push({ id: "DIFF-REQ-TASKS", status: "PASS", detail: "PRD/requirement changes include task updates." });
+  }
+}
+
+function addIntentReqCriterion(criteria: CriterionResult[], categories: DiffReport["categories"], reqOrPrdChanged: boolean): void {
+  if (categories.intent.length === 0) return;
+  if (!reqOrPrdChanged) {
+    criteria.push({ id: "DIFF-INTENT-REQ", status: "WARNING", detail: "Intent changed without requirement updates.", fix: "Review whether the prd/ files should change to reflect the updated intent scope." });
+  } else {
+    criteria.push({ id: "DIFF-INTENT-REQ", status: "PASS", detail: "Intent changes include requirement updates." });
+  }
+}
+
 function addTraceabilityCriteria(
   criteria: CriterionResult[],
   categories: DiffReport["categories"],
   hotfix: boolean
 ): void {
-  const storyOrRcaChanged = categories.stories.length > 0 || categories.rca.length > 0;
-  if (categories.code.length > 0 && !storyOrRcaChanged && !hotfix) {
-    criteria.push({
-      id: "R-26",
-      status: "VIOLATION",
-      detail: "Code changes are untraceable because no story or RCA changed in the same diff.",
-      evidence: categories.code,
-      fix: "Add or update a story, or create an RCA for a hotfix path before landing code changes.",
-    });
-  } else if (categories.code.length > 0) {
-    criteria.push({
-      id: "R-26",
-      status: "PASS",
-      detail: hotfix ? "Code changes are marked as hotfix-compatible by commit message." : "Code changes are accompanied by a story or RCA diff.",
-    });
-  }
-
-  if (categories.code.length > 0 && categories.tests.length === 0) {
-    criteria.push({
-      id: "DIFF-CODE-TESTS",
-      status: "WARNING",
-      detail: "Code changed without corresponding test changes.",
-      evidence: categories.code,
-      fix: "Add or update tests, or re-run executability/quality checks for the changed code path.",
-    });
-  } else if (categories.code.length > 0) {
-    criteria.push({ id: "DIFF-CODE-TESTS", status: "PASS", detail: "Code changes include matching test changes." });
-  }
-
-  // PRD changes require compile_requirements to be run so requirements.md stays current
-  if (categories.prd.length > 0) {
-    criteria.push({
-      id: "DIFF-PRD-COMPILE",
-      status: "VIOLATION",
-      detail: `${categories.prd.length} PRD file(s) changed. requirements.md must be recompiled.`,
-      evidence: categories.prd,
-      fix: "Run compile_requirements with write:true to regenerate requirements.md from all prd/ files, then re-run G2 and G3.",
-    });
-  }
-
-  // Stories changed without corresponding PRD or requirement update
   const reqOrPrdChanged = categories.requirements.length > 0 || categories.prd.length > 0;
-  if (categories.stories.length > 0 && !reqOrPrdChanged) {
-    criteria.push({
-      id: "DIFF-STORY-REQ",
-      status: "VIOLATION",
-      detail: "Stories changed without corresponding PRD or requirement updates.",
-      evidence: categories.stories,
-      fix: "Update the relevant prd/ file and run compile_requirements, or update requirements.md directly.",
-    });
-  } else if (categories.stories.length > 0) {
-    criteria.push({ id: "DIFF-STORY-REQ", status: "PASS", detail: "Story changes include PRD/requirement updates." });
-  }
-
-  // PRD or requirements changed without ADR update
-  const reqChanged = categories.requirements.length > 0 || categories.prd.length > 0;
-  const designChanged = categories.design.length > 0 || categories.adr.length > 0;
-  if (reqChanged && !designChanged) {
-    criteria.push({
-      id: "DIFF-REQ-DESIGN",
-      status: "WARNING",
-      detail: "PRD/requirements changed without ADR changes; architecture decisions may be stale.",
-      fix: "Review adr/ and update or add ADR files if requirement changes introduce new architectural decisions.",
-    });
-  } else if (reqChanged) {
-    criteria.push({ id: "DIFF-REQ-DESIGN", status: "PASS", detail: "PRD/requirement changes include ADR updates." });
-  }
-
-  if (reqChanged && categories.tasks.length === 0) {
-    criteria.push({
-      id: "DIFF-REQ-TASKS",
-      status: "WARNING",
-      detail: "PRD/requirements changed without task updates; task coverage may be stale.",
-      fix: "Review tasks.md and add tasks for any new features or rules introduced by this PRD change.",
-    });
-  } else if (reqChanged) {
-    criteria.push({ id: "DIFF-REQ-TASKS", status: "PASS", detail: "PRD/requirement changes include task updates." });
-  }
-
-  if (categories.intent.length > 0 && !reqOrPrdChanged) {
-    criteria.push({
-      id: "DIFF-INTENT-REQ",
-      status: "WARNING",
-      detail: "Intent changed without requirement updates.",
-      fix: "Review whether the prd/ files should change to reflect the updated intent scope.",
-    });
-  } else if (categories.intent.length > 0) {
-    criteria.push({ id: "DIFF-INTENT-REQ", status: "PASS", detail: "Intent changes include requirement updates." });
-  }
+  const reqChanged = reqOrPrdChanged;
+  addR26Criterion(criteria, categories, hotfix);
+  addCodeTestsCriterion(criteria, categories);
+  addPrdCompileCriterion(criteria, categories);
+  addStoryReqCriterion(criteria, categories, reqOrPrdChanged);
+  addReqDesignCriterion(criteria, categories, reqChanged);
+  addReqTasksCriterion(criteria, categories, reqChanged);
+  addIntentReqCriterion(criteria, categories, reqOrPrdChanged);
 }
 
 function collectAdrTriggers(files: DiffFileChange[]): { signals: string[]; evidence: string[]; dependencies: string[] } {

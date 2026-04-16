@@ -3,7 +3,7 @@ import type { GateResult, RunResult, CriterionResult, Format } from "./types.js"
 import type { ArtifactValidationSummary } from "./artifacts.js";
 import type { InstallFailure } from "./types.js";
 import type { ComplexityReport } from "./complexity.js";
-import type { MutationReport } from "./mutation.js";
+import type { MutationReport, MutationNote, MutationFunctionResult } from "./mutation.js";
 import type { DiffReport } from "./diff.js";
 import type {
   AssumptionMetricsResult,
@@ -333,6 +333,27 @@ export function formatComplexityReport(
   return lines.join("\n");
 }
 
+function formatMutationNotes(notes: MutationNote[]): string[] {
+  if (notes.length === 0) return [];
+  const result = ["Notes:"];
+  for (const note of notes) {
+    result.push(`  • [${note.code}] ${note.file ? `${note.file}: ` : ""}${note.detail}`);
+  }
+  result.push("─".repeat(60));
+  return result;
+}
+
+function formatMutationFunctions(functions: MutationFunctionResult[]): string[] {
+  if (functions.length === 0) return [];
+  const result = ["Functions:"];
+  for (const fn of functions) {
+    const score = fn.score === null ? "n/a" : `${fn.score.toFixed(1)}%`;
+    const critical = fn.critical ? fn.critical_match ?? "yes" : "no";
+    result.push(`  • ${fn.file}:${fn.name} score=${score} critical=${critical} cc=${fn.cc ?? "n/a"} survivors=${fn.surviving_mutants.length}`);
+  }
+  return result;
+}
+
 export function formatMutationReport(
   result: MutationReport,
   format: Extract<Format, "text" | "json" | "mermaid"> = "text"
@@ -340,46 +361,24 @@ export function formatMutationReport(
   if (format === "json") return JSON.stringify(result, null, 2);
   if (format === "mermaid") {
     const historyScore = result.score === null ? 0 : Number(result.score.toFixed(2));
-    return [
-      "```mermaid",
-      "%% Mermaid 10.x",
-      "xychart-beta",
-      '  title "Mutation Score Trend"',
-      "  x-axis [1]",
-      `  line [${historyScore}]`,
-      "```",
-    ].join("\n");
+    return ["```mermaid", "%% Mermaid 10.x", "xychart-beta", '  title "Mutation Score Trend"', "  x-axis [1]", `  line [${historyScore}]`, "```"].join("\n");
   }
 
+  const scoreStr = result.score === null ? "n/a" : `${result.score.toFixed(1)}%`;
   const lines = [
     `Mutation Report — ${result.status}`,
     `Path: ${result.path}`,
     `Language: ${result.language}  |  Tool: ${result.tool ?? "none"}  |  Trigger: ${result.trigger}`,
-    `Score: ${result.score === null ? "n/a" : `${result.score.toFixed(1)}%`}  |  Mutants: ${result.total_mutants} total / ${result.killed} killed / ${result.survived} survived / ${result.timeout} timeout`,
+    `Score: ${scoreStr}  |  Mutants: ${result.total_mutants} total / ${result.killed} killed / ${result.survived} survived / ${result.timeout} timeout`,
     `Trend: ${numericSparkline(result.score === null ? [] : [result.score])}`,
     `Incremental: ${result.incremental ? "yes" : "no"}  |  Duration: ${result.durationMs}ms`,
     "─".repeat(60),
     "Criteria:",
     ...result.criteria.map((criterion) => criterionLine(criterion)),
     "─".repeat(60),
+    ...formatMutationNotes(result.notes),
+    ...formatMutationFunctions(result.functions),
   ];
-
-  if (result.notes.length > 0) {
-    lines.push("Notes:");
-    for (const note of result.notes) {
-      lines.push(`  • [${note.code}] ${note.file ? `${note.file}: ` : ""}${note.detail}`);
-    }
-    lines.push("─".repeat(60));
-  }
-
-  if (result.functions.length > 0) {
-    lines.push("Functions:");
-    for (const fn of result.functions) {
-      lines.push(
-        `  • ${fn.file}:${fn.name} score=${fn.score === null ? "n/a" : `${fn.score.toFixed(1)}%`} critical=${fn.critical ? fn.critical_match ?? "yes" : "no"} cc=${fn.cc ?? "n/a"} survivors=${fn.surviving_mutants.length}`
-      );
-    }
-  }
 
   return lines.join("\n");
 }

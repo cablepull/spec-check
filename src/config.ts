@@ -71,6 +71,30 @@ function validateWeights(
   return null;
 }
 
+const OBJECT_MERGE_KEYS = new Set<keyof SpecCheckConfig>(["compliance_weights", "monorepo", "mutation"]);
+
+function applyConfigKey(
+  result: SpecCheckConfig,
+  sources: Record<string, ConfigSource>,
+  key: keyof SpecCheckConfig,
+  val: unknown,
+  source: ConfigSource
+): void {
+  if (key === "thresholds" && typeof val === "object" && val !== null) {
+    Object.assign(result.thresholds, val);
+    for (const k of Object.keys(val as object)) sources[`thresholds.${k}`] = source;
+    return;
+  }
+  if (OBJECT_MERGE_KEYS.has(key) && typeof val === "object" && val !== null) {
+    Object.assign(result[key] as object, val);
+    sources[key] = source;
+    return;
+  }
+  // @ts-expect-error dynamic assignment
+  result[key] = val;
+  sources[key] = source;
+}
+
 // Deep merge: project values override global, global overrides defaults.
 // Returns merged config plus a sources map for each top-level key.
 function mergeConfigs(
@@ -81,31 +105,12 @@ function mergeConfigs(
   const sources: Record<string, ConfigSource> = {};
   const result = structuredClone(defaults);
 
-  const apply = (
-    layer: Partial<SpecCheckConfig> | null,
-    source: ConfigSource
-  ) => {
+  const apply = (layer: Partial<SpecCheckConfig> | null, source: ConfigSource) => {
     if (!layer) return;
     for (const key of Object.keys(layer) as Array<keyof SpecCheckConfig>) {
       const val = layer[key];
       if (val === undefined) continue;
-      if (key === "thresholds" && typeof val === "object") {
-        Object.assign(result.thresholds, val);
-        for (const k of Object.keys(val as object)) sources[`thresholds.${k}`] = source;
-      } else if (key === "compliance_weights" && typeof val === "object") {
-        Object.assign(result.compliance_weights, val);
-        sources[key] = source;
-      } else if (key === "monorepo" && typeof val === "object") {
-        Object.assign(result.monorepo, val);
-        sources[key] = source;
-      } else if (key === "mutation" && typeof val === "object") {
-        Object.assign(result.mutation, val);
-        sources[key] = source;
-      } else {
-        // @ts-expect-error dynamic assignment
-        result[key] = val;
-        sources[key] = source;
-      }
+      applyConfigKey(result, sources, key, val, source);
     }
   };
 
@@ -116,6 +121,22 @@ function mergeConfigs(
   apply(project, "project");
 
   return { value: result, sources };
+}
+
+function validateConfigLayer(
+  data: Partial<SpecCheckConfig> | null,
+  path: string | null,
+  errors: ConfigError[]
+): void {
+  if (!data || !path) return;
+  if (data.thresholds) {
+    const e = validateThresholds(data.thresholds, path);
+    if (e) errors.push(e);
+  }
+  if (data.compliance_weights) {
+    const e = validateWeights(data.compliance_weights, path);
+    if (e) errors.push(e);
+  }
 }
 
 export function loadConfig(projectRoot?: string): {
@@ -133,27 +154,9 @@ export function loadConfig(projectRoot?: string): {
     : { data: null, error: null };
   if (projectError) errors.push(projectError);
 
-  // Validate thresholds
-  if (globalData?.thresholds) {
-    const e = validateThresholds(globalData.thresholds, globalConfigPath());
-    if (e) errors.push(e);
-  }
-  if (projectData?.thresholds && projectPath) {
-    const e = validateThresholds(projectData.thresholds, projectPath);
-    if (e) errors.push(e);
-  }
+  validateConfigLayer(globalData, globalConfigPath(), errors);
+  validateConfigLayer(projectData, projectPath, errors);
 
-  // Validate compliance weights
-  if (globalData?.compliance_weights) {
-    const e = validateWeights(globalData.compliance_weights, globalConfigPath());
-    if (e) errors.push(e);
-  }
-  if (projectData?.compliance_weights && projectPath) {
-    const e = validateWeights(projectData.compliance_weights, projectPath);
-    if (e) errors.push(e);
-  }
-
-  // Use null for layers that had parse errors
   const safeGlobal = globalError ? null : globalData;
   const safeProject = projectError ? null : projectData;
 

@@ -517,6 +517,60 @@ export function getSupersessionHistory(
   return { path: resolve(targetPath), events, durationMs: Date.now() - start };
 }
 
+type CountMap = Map<string, { made: number; invalidated: number }>;
+
+function incrementCountMap(map: CountMap, key: string, isInvalidated: boolean): void {
+  const entry = map.get(key) ?? { made: 0, invalidated: 0 };
+  entry.made += 1;
+  if (isInvalidated) entry.invalidated += 1;
+  map.set(key, entry);
+}
+
+function buildArtifactTypeMap(assumptionRows: Array<{ artifact_type: string; status: string }>): CountMap {
+  const map: CountMap = new Map();
+  for (const row of assumptionRows) {
+    incrementCountMap(map, row.artifact_type, /invalidated/i.test(row.status));
+  }
+  return map;
+}
+
+function buildModelMap(assumptionRows: Array<{ model: string; status: string }>): CountMap {
+  const map: CountMap = new Map();
+  for (const row of assumptionRows) {
+    incrementCountMap(map, row.model, /invalidated/i.test(row.status));
+  }
+  return map;
+}
+
+function buildHistoryBuckets(
+  assumptionRows: Array<{ artifact_path: string; status: string }>,
+  events: SupersessionHistoryResult["events"],
+  sinceMs: number | null
+): Map<string, { made: number; invalidated: number }> {
+  const buckets = new Map<string, { made: number; invalidated: number }>();
+  for (const row of assumptionRows) {
+    if (sinceMs !== null) {
+      const stamp = statSync(row.artifact_path).mtime.getTime();
+      if (stamp < sinceMs) continue;
+    }
+    const entry = buckets.get("current") ?? { made: 0, invalidated: 0 };
+    entry.made += 1;
+    if (/invalidated/i.test(row.status)) entry.invalidated += 1;
+    buckets.set("current", entry);
+  }
+  for (const event of events) {
+    const day = event.timestamp.slice(0, 10);
+    const entry = buckets.get(day) ?? { made: 0, invalidated: 0 };
+    entry.invalidated += 1;
+    buckets.set(day, entry);
+  }
+  return buckets;
+}
+
+function invalidationRate(made: number, invalidated: number): number | null {
+  return made > 0 ? (invalidated / made) * 100 : null;
+}
+
 export function getAssumptionMetrics(
   targetPath: string,
   service: ServiceInfo,
@@ -529,67 +583,24 @@ export function getAssumptionMetrics(
   const sinceMs = since ? Date.parse(since) : null;
 
   const assumptionRows = listing.items.flatMap((item) =>
-    item.assumptions.map((row) => ({
-      ...row,
-      artifact_type: item.artifact_type,
-      artifact_path: item.artifact_path,
-      model: readOriginalModel(readText(item.artifact_path)),
-    }))
+    item.assumptions.map((row) => ({ ...row, artifact_type: item.artifact_type, artifact_path: item.artifact_path, model: readOriginalModel(readText(item.artifact_path)) }))
   );
 
   const assumptionsMade = assumptionRows.length;
   const assumptionsInvalidated = assumptionRows.filter((row) => /invalidated/i.test(row.status)).length;
-  const days = history.events
-    .map((event) => event.days_to_invalidation)
-    .filter((value): value is number => typeof value === "number")
-    .map((value) => Math.max(0, value));
+  const days = history.events.map((e) => e.days_to_invalidation).filter((v): v is number => typeof v === "number").map((v) => Math.max(0, v));
   const averageDays = days.length > 0 ? days.reduce((a, b) => a + b, 0) / days.length : null;
 
-  const artifactTypeMap = new Map<string, { made: number; invalidated: number }>();
-  for (const row of assumptionRows) {
-    const current = artifactTypeMap.get(row.artifact_type) ?? { made: 0, invalidated: 0 };
-    current.made += 1;
-    if (/invalidated/i.test(row.status)) current.invalidated += 1;
-    artifactTypeMap.set(row.artifact_type, current);
-  }
-
+  const artifactTypeMap = buildArtifactTypeMap(assumptionRows);
   const categoryMap = new Map<string, number>();
   for (const event of history.events) {
     const category = classifyAssumption(event.assumption_text, event.reason);
     categoryMap.set(category, (categoryMap.get(category) ?? 0) + 1);
   }
-
-  const modelMap = new Map<string, { made: number; invalidated: number }>();
-  for (const row of assumptionRows) {
-    const current = modelMap.get(row.model) ?? { made: 0, invalidated: 0 };
-    current.made += 1;
-    if (/invalidated/i.test(row.status)) current.invalidated += 1;
-    modelMap.set(row.model, current);
-  }
-
-  const historyBuckets = new Map<string, { made: number; invalidated: number }>();
-  for (const row of assumptionRows) {
-    let bucket = "current";
-    if (sinceMs !== null) {
-      const stamp = statSync(row.artifact_path).mtime.getTime();
-      if (stamp < sinceMs) continue;
-    }
-    const current = historyBuckets.get(bucket) ?? { made: 0, invalidated: 0 };
-    current.made += 1;
-    if (/invalidated/i.test(row.status)) current.invalidated += 1;
-    historyBuckets.set(bucket, current);
-  }
-  for (const event of history.events) {
-    const day = event.timestamp.slice(0, 10);
-    const current = historyBuckets.get(day) ?? { made: 0, invalidated: 0 };
-    current.invalidated += 1;
-    historyBuckets.set(day, current);
-  }
+  const modelMap = buildModelMap(assumptionRows);
+  const historyBuckets = buildHistoryBuckets(assumptionRows, history.events, sinceMs);
   const historySeries = [...historyBuckets.entries()]
-    .map(([timestamp, value]) => ({
-      timestamp,
-      invalidation_rate: value.made > 0 ? (value.invalidated / value.made) * 100 : 0,
-    }))
+    .map(([timestamp, value]) => ({ timestamp, invalidation_rate: value.made > 0 ? (value.invalidated / value.made) * 100 : 0 }))
     .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
 
   return {
@@ -598,26 +609,13 @@ export function getAssumptionMetrics(
     totals: {
       assumptions_made: assumptionsMade,
       assumptions_invalidated: assumptionsInvalidated,
-      invalidation_rate: assumptionsMade > 0 ? (assumptionsInvalidated / assumptionsMade) * 100 : null,
+      invalidation_rate: invalidationRate(assumptionsMade, assumptionsInvalidated),
       average_days_to_invalidation: averageDays,
       trend: history.events.length >= 2 ? trend(historySeries.map((item) => item.invalidation_rate)) : "insufficient_data",
     },
-    by_artifact_type: [...artifactTypeMap.entries()].map(([artifact_type, value]) => ({
-      artifact_type,
-      made: value.made,
-      invalidated: value.invalidated,
-      invalidation_rate: value.made > 0 ? (value.invalidated / value.made) * 100 : null,
-    })),
-    top_invalidated_categories: [...categoryMap.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 5)
-      .map(([category, count]) => ({ category, count })),
-    by_model: [...modelMap.entries()].map(([model, value]) => ({
-      model,
-      assumptions_made: value.made,
-      assumptions_invalidated: value.invalidated,
-      invalidation_rate: value.made > 0 ? (value.invalidated / value.made) * 100 : null,
-    })),
+    by_artifact_type: [...artifactTypeMap.entries()].map(([artifact_type, value]) => ({ artifact_type, made: value.made, invalidated: value.invalidated, invalidation_rate: invalidationRate(value.made, value.invalidated) })),
+    top_invalidated_categories: [...categoryMap.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 5).map(([category, count]) => ({ category, count })),
+    by_model: [...modelMap.entries()].map(([model, value]) => ({ model, assumptions_made: value.made, assumptions_invalidated: value.invalidated, invalidation_rate: invalidationRate(value.made, value.invalidated) })),
     history: historySeries,
     durationMs: Date.now() - start,
   };

@@ -84,6 +84,73 @@ function inferArtifactKind(path: string, text: string): ArtifactKind | null {
   return null;
 }
 
+function isValidYesNo(value: string): boolean {
+  return value === "yes" || value === "no" || value.startsWith("yes ") || value.startsWith("no ");
+}
+
+function checkStoryStructure(file: string, sections: Map<string, string>): CriterionResult[] {
+  const intent = sections.get("intent") ?? "";
+  const acceptance = sections.get("acceptance criteria") ?? "";
+  const requirements = sections.get("requirements") ?? "";
+  const adrRequired = normalizeValue(sections.get("adr required") ?? "");
+  return [
+    intent
+      ? { id: "S-1", status: "PASS" as const, detail: "Intent section present." }
+      : { id: "S-1", status: "VIOLATION" as const, detail: "Missing or empty `## Intent` section.", evidence: [`${file}: Intent`], fix: "Add a non-empty `## Intent` section describing the story purpose." },
+    acceptance && /^\s*[-*]\s*\[[ x]\]/im.test(acceptance)
+      ? { id: "S-2", status: "PASS" as const, detail: "Acceptance Criteria section contains checklist items." }
+      : { id: "S-2", status: "VIOLATION" as const, detail: "Missing `## Acceptance Criteria` checklist items.", evidence: [`${file}: Acceptance Criteria`], fix: "Add `## Acceptance Criteria` with markdown checklist items." },
+    requirements && REQUIREMENT_REFERENCE.test(requirements)
+      ? { id: "S-3", status: "PASS" as const, detail: "Requirements section contains a requirement reference." }
+      : { id: "S-3", status: "VIOLATION" as const, detail: "Requirements section is missing a requirement reference or link.", evidence: [`${file}: Requirements`], fix: "Reference at least one requirement ID, PRD section, or markdown link in `## Requirements`." },
+    isValidYesNo(adrRequired)
+      ? { id: "S-4", status: "PASS" as const, detail: "`ADR Required` value is valid." }
+      : { id: "S-4", status: "VIOLATION" as const, detail: "`## ADR Required` must be `yes` or `no`.", evidence: [`${file}: ADR Required = ${sections.get("adr required") ?? "(missing)"}`], fix: "Set `## ADR Required` to `Yes` or `No`." },
+    sections.has("assumptions")
+      ? { id: "S-5", status: "PASS" as const, detail: "Assumptions section present." }
+      : { id: "S-5", status: "VIOLATION" as const, detail: "Missing `## Assumptions` section.", evidence: [`${file}: Assumptions`], fix: "Add `## Assumptions`, even if the content states that none were needed." },
+  ];
+}
+
+function checkS6Causal(file: string, intent: string, config?: ResolvedConfig): CriterionResult {
+  const threshold = config ? getThreshold(config, "I-2") : 0.4;
+  const causal = detectCausalLanguage(intent);
+  if (!causal.matched || causal.confidence < threshold) {
+    return { id: "S-6", status: "VIOLATION", detail: "Intent section lacks causal language explaining WHY this story is needed.", evidence: [`${file}: Intent`], confidence: causal.confidence, fix: "Add causal language to Intent: 'because', 'in order to', 'the problem is', 'this enables', etc." };
+  }
+  return { id: "S-6", status: "PASS", detail: "Causal language detected in Intent.", evidence: causal.evidence, confidence: causal.confidence };
+}
+
+function checkS7Ordering(intent: string, config?: ResolvedConfig): CriterionResult {
+  const threshold = config ? getThreshold(config, "I-4") : 0.6;
+  const ordering = detectSolutionBeforeProblem(intent);
+  if (ordering.matched && ordering.confidence >= threshold) {
+    return { id: "S-7", status: "VIOLATION", detail: "Solution language appears before problem language in Intent.", evidence: ordering.evidence, confidence: ordering.confidence, fix: "Reorder Intent: describe the problem first, then the proposed solution." };
+  }
+  return { id: "S-7", status: "PASS", detail: "Problem precedes solution in Intent.", evidence: ordering.evidence, confidence: ordering.confidence };
+}
+
+function checkS8ImplLeak(intent: string, config?: ResolvedConfig): CriterionResult {
+  const threshold = config ? getThreshold(config, "I-5") : 0.6;
+  const implLeak = detectImplementationLeak(intent);
+  if (implLeak.matched && implLeak.confidence >= threshold) {
+    return { id: "S-8", status: "VIOLATION", detail: "Intent section contains implementation-specific language.", evidence: implLeak.evidence, confidence: implLeak.confidence, fix: "Remove framework names, PascalCase identifiers, SQL, and tool-specific references from Intent." };
+  }
+  if (implLeak.matched) {
+    return { id: "S-8", status: "WARNING", detail: "Possible implementation detail in Intent (below threshold).", evidence: implLeak.evidence, confidence: implLeak.confidence };
+  }
+  return { id: "S-8", status: "PASS", detail: "No implementation leak in Intent." };
+}
+
+function checkS9Constraint(file: string, text: string, config?: ResolvedConfig): CriterionResult {
+  const threshold = config ? getThreshold(config, "I-3") : 0.4;
+  const constraint = detectConstraintLanguage(text);
+  if (!constraint.matched || constraint.confidence < threshold) {
+    return { id: "S-9", status: "VIOLATION", detail: "Story lacks constraint language defining scope boundaries.", evidence: [file], confidence: constraint.confidence, fix: "Add constraints: 'must', 'required', 'no more than', 'only', 'limit', etc." };
+  }
+  return { id: "S-9", status: "PASS", detail: "Constraint language detected.", evidence: constraint.evidence, confidence: constraint.confidence };
+}
+
 function validateStory(
   file: string,
   text: string,
@@ -91,147 +158,15 @@ function validateStory(
 ): GateResult & { file: string; artifactKind: "story" } {
   const start = Date.now();
   const sections = collectSections(text);
-  const criteria: CriterionResult[] = [];
-
+  const criteria: CriterionResult[] = checkStoryStructure(file, sections);
   const intent = sections.get("intent") ?? "";
-  criteria.push(
-    intent
-      ? { id: "S-1", status: "PASS", detail: "Intent section present." }
-      : {
-          id: "S-1",
-          status: "VIOLATION",
-          detail: "Missing or empty `## Intent` section.",
-          evidence: [`${file}: Intent`],
-          fix: "Add a non-empty `## Intent` section describing the story purpose.",
-        }
-  );
-
-  const acceptance = sections.get("acceptance criteria") ?? "";
-  criteria.push(
-    acceptance && /^\s*[-*]\s*\[[ x]\]/im.test(acceptance)
-      ? { id: "S-2", status: "PASS", detail: "Acceptance Criteria section contains checklist items." }
-      : {
-          id: "S-2",
-          status: "VIOLATION",
-          detail: "Missing `## Acceptance Criteria` checklist items.",
-          evidence: [`${file}: Acceptance Criteria`],
-          fix: "Add `## Acceptance Criteria` with markdown checklist items.",
-        }
-  );
-
-  const requirements = sections.get("requirements") ?? "";
-  criteria.push(
-    requirements && REQUIREMENT_REFERENCE.test(requirements)
-      ? { id: "S-3", status: "PASS", detail: "Requirements section contains a requirement reference." }
-      : {
-          id: "S-3",
-          status: "VIOLATION",
-          detail: "Requirements section is missing a requirement reference or link.",
-          evidence: [`${file}: Requirements`],
-          fix: "Reference at least one requirement ID, PRD section, or markdown link in `## Requirements`.",
-        }
-  );
-
-  const adrRequired = normalizeValue(sections.get("adr required") ?? "");
-  criteria.push(
-    adrRequired === "yes" || adrRequired === "no" || adrRequired.startsWith("yes ") || adrRequired.startsWith("no ")
-      ? { id: "S-4", status: "PASS", detail: "`ADR Required` value is valid." }
-      : {
-          id: "S-4",
-          status: "VIOLATION",
-          detail: "`## ADR Required` must be `yes` or `no`.",
-          evidence: [`${file}: ADR Required = ${sections.get("adr required") ?? "(missing)"}`],
-          fix: "Set `## ADR Required` to `Yes` or `No`.",
-        }
-  );
-
-  criteria.push(
-    sections.has("assumptions")
-      ? { id: "S-5", status: "PASS", detail: "Assumptions section present." }
-      : {
-          id: "S-5",
-          status: "VIOLATION",
-          detail: "Missing `## Assumptions` section.",
-          evidence: [`${file}: Assumptions`],
-          fix: "Add `## Assumptions`, even if the content states that none were needed.",
-        }
-  );
-
-  // ── S-6–S-9: NLP checks on Intent section content ──────────────────────────
-  // Only run when Intent section is non-empty (S-1 already blocks the empty case).
   if (intent) {
-    const causalThreshold = config ? getThreshold(config, "I-2") : 0.4;
-    const causal = detectCausalLanguage(intent);
-    if (!causal.matched || causal.confidence < causalThreshold) {
-      criteria.push({
-        id: "S-6",
-        status: "VIOLATION",
-        detail: "Intent section lacks causal language explaining WHY this story is needed.",
-        evidence: [`${file}: Intent`],
-        confidence: causal.confidence,
-        fix: "Add causal language to Intent: 'because', 'in order to', 'the problem is', 'this enables', etc.",
-      });
-    } else {
-      criteria.push({ id: "S-6", status: "PASS", detail: "Causal language detected in Intent.", evidence: causal.evidence, confidence: causal.confidence });
-    }
-
-    const orderingThreshold = config ? getThreshold(config, "I-4") : 0.6;
-    const ordering = detectSolutionBeforeProblem(intent);
-    if (ordering.matched && ordering.confidence >= orderingThreshold) {
-      criteria.push({
-        id: "S-7",
-        status: "VIOLATION",
-        detail: "Solution language appears before problem language in Intent.",
-        evidence: ordering.evidence,
-        confidence: ordering.confidence,
-        fix: "Reorder Intent: describe the problem first, then the proposed solution.",
-      });
-    } else {
-      criteria.push({ id: "S-7", status: "PASS", detail: "Problem precedes solution in Intent.", evidence: ordering.evidence, confidence: ordering.confidence });
-    }
-
-    const implThreshold = config ? getThreshold(config, "I-5") : 0.6;
-    const implLeak = detectImplementationLeak(intent);
-    if (implLeak.matched && implLeak.confidence >= implThreshold) {
-      criteria.push({
-        id: "S-8",
-        status: "VIOLATION",
-        detail: "Intent section contains implementation-specific language.",
-        evidence: implLeak.evidence,
-        confidence: implLeak.confidence,
-        fix: "Remove framework names, PascalCase identifiers, SQL, and tool-specific references from Intent.",
-      });
-    } else if (implLeak.matched) {
-      criteria.push({ id: "S-8", status: "WARNING", detail: "Possible implementation detail in Intent (below threshold).", evidence: implLeak.evidence, confidence: implLeak.confidence });
-    } else {
-      criteria.push({ id: "S-8", status: "PASS", detail: "No implementation leak in Intent." });
-    }
-
-    const constraintThreshold = config ? getThreshold(config, "I-3") : 0.4;
-    const constraint = detectConstraintLanguage(text); // full story text, not just intent
-    if (!constraint.matched || constraint.confidence < constraintThreshold) {
-      criteria.push({
-        id: "S-9",
-        status: "VIOLATION",
-        detail: "Story lacks constraint language defining scope boundaries.",
-        evidence: [`${file}`],
-        confidence: constraint.confidence,
-        fix: "Add constraints: 'must', 'required', 'no more than', 'only', 'limit', etc.",
-      });
-    } else {
-      criteria.push({ id: "S-9", status: "PASS", detail: "Constraint language detected.", evidence: constraint.evidence, confidence: constraint.confidence });
-    }
+    criteria.push(checkS6Causal(file, intent, config));
+    criteria.push(checkS7Ordering(intent, config));
+    criteria.push(checkS8ImplLeak(intent, config));
+    criteria.push(checkS9Constraint(file, text, config));
   }
-
-  return {
-    gate: "S",
-    name: "Story Validation",
-    status: buildStatus(criteria),
-    criteria,
-    durationMs: Date.now() - start,
-    file,
-    artifactKind: "story",
-  };
+  return { gate: "S", name: "Story Validation", status: buildStatus(criteria), criteria, durationMs: Date.now() - start, file, artifactKind: "story" };
 }
 
 function validateAdr(file: string, text: string): GateResult & { file: string; artifactKind: "adr" } {
@@ -291,92 +226,36 @@ function validateAdr(file: string, text: string): GateResult & { file: string; a
   };
 }
 
+function buildRcaCriteria(file: string, sections: Map<string, string>): CriterionResult[] {
+  const required = ["summary", "root cause", "violated requirement", "resolution", "spec update required", "adr required"];
+  const missing = required.filter((name) => !(sections.get(name) ?? "").trim());
+  const violatedRequirement = sections.get("violated requirement") ?? "";
+  const specUpdate = normalizeValue(sections.get("spec update required") ?? "");
+  const adrRequired = normalizeValue(sections.get("adr required") ?? "");
+  return [
+    missing.length === 0
+      ? { id: "RC-1", status: "PASS" as const, detail: "All required RCA sections are present." }
+      : { id: "RC-1", status: "VIOLATION" as const, detail: `${missing.length} required RCA section(s) are missing or empty.`, evidence: missing.map((name) => `${file}: ${name}`), fix: "Add non-empty sections for Summary, Root Cause, Violated Requirement, Resolution, Spec Update Required, and ADR Required." },
+    violatedRequirement && REQUIREMENT_REFERENCE.test(violatedRequirement)
+      ? { id: "RC-2", status: "PASS" as const, detail: "Violated Requirement section contains a reference." }
+      : { id: "RC-2", status: "VIOLATION" as const, detail: "`## Violated Requirement` must include a requirement reference or link.", evidence: [`${file}: Violated Requirement`], fix: "Reference the violated requirement with an ID, PRD section, or markdown link." },
+    isValidYesNo(specUpdate)
+      ? { id: "RC-3", status: "PASS" as const, detail: "`Spec Update Required` value is valid." }
+      : { id: "RC-3", status: "VIOLATION" as const, detail: "`## Spec Update Required` must be `yes` or `no`.", evidence: [`${file}: Spec Update Required = ${sections.get("spec update required") ?? "(missing)"}`], fix: "Set `## Spec Update Required` to `Yes` or `No`." },
+    isValidYesNo(adrRequired)
+      ? { id: "RC-4", status: "PASS" as const, detail: "`ADR Required` value is valid." }
+      : { id: "RC-4", status: "VIOLATION" as const, detail: "`## ADR Required` must be `yes` or `no`.", evidence: [`${file}: ADR Required = ${sections.get("adr required") ?? "(missing)"}`], fix: "Set `## ADR Required` to `Yes` or `No`." },
+    sections.has("assumptions")
+      ? { id: "RC-5", status: "PASS" as const, detail: "Assumptions section present." }
+      : { id: "RC-5", status: "VIOLATION" as const, detail: "Missing `## Assumptions` section.", evidence: [`${file}: Assumptions`], fix: "Add `## Assumptions` to the RCA." },
+  ];
+}
+
 function validateRca(file: string, text: string): GateResult & { file: string; artifactKind: "rca" } {
   const start = Date.now();
   const sections = collectSections(text);
-  const criteria: CriterionResult[] = [];
-
-  const required = [
-    "summary",
-    "root cause",
-    "violated requirement",
-    "resolution",
-    "spec update required",
-    "adr required",
-  ];
-  const missing = required.filter((name) => !(sections.get(name) ?? "").trim());
-  criteria.push(
-    missing.length === 0
-      ? { id: "RC-1", status: "PASS", detail: "All required RCA sections are present." }
-      : {
-          id: "RC-1",
-          status: "VIOLATION",
-          detail: `${missing.length} required RCA section(s) are missing or empty.`,
-          evidence: missing.map((name) => `${file}: ${name}`),
-          fix: "Add non-empty sections for Summary, Root Cause, Violated Requirement, Resolution, Spec Update Required, and ADR Required.",
-        }
-  );
-
-  const violatedRequirement = sections.get("violated requirement") ?? "";
-  criteria.push(
-    violatedRequirement && REQUIREMENT_REFERENCE.test(violatedRequirement)
-      ? { id: "RC-2", status: "PASS", detail: "Violated Requirement section contains a reference." }
-      : {
-          id: "RC-2",
-          status: "VIOLATION",
-          detail: "`## Violated Requirement` must include a requirement reference or link.",
-          evidence: [`${file}: Violated Requirement`],
-          fix: "Reference the violated requirement with an ID, PRD section, or markdown link.",
-        }
-  );
-
-  const specUpdate = normalizeValue(sections.get("spec update required") ?? "");
-  criteria.push(
-    specUpdate === "yes" || specUpdate === "no" || specUpdate.startsWith("yes ") || specUpdate.startsWith("no ")
-      ? { id: "RC-3", status: "PASS", detail: "`Spec Update Required` value is valid." }
-      : {
-          id: "RC-3",
-          status: "VIOLATION",
-          detail: "`## Spec Update Required` must be `yes` or `no`.",
-          evidence: [`${file}: Spec Update Required = ${sections.get("spec update required") ?? "(missing)"}`],
-          fix: "Set `## Spec Update Required` to `Yes` or `No`.",
-        }
-  );
-
-  const adrRequired = normalizeValue(sections.get("adr required") ?? "");
-  criteria.push(
-    adrRequired === "yes" || adrRequired === "no" || adrRequired.startsWith("yes ") || adrRequired.startsWith("no ")
-      ? { id: "RC-4", status: "PASS", detail: "`ADR Required` value is valid." }
-      : {
-          id: "RC-4",
-          status: "VIOLATION",
-          detail: "`## ADR Required` must be `yes` or `no`.",
-          evidence: [`${file}: ADR Required = ${sections.get("adr required") ?? "(missing)"}`],
-          fix: "Set `## ADR Required` to `Yes` or `No`.",
-        }
-  );
-
-  criteria.push(
-    sections.has("assumptions")
-      ? { id: "RC-5", status: "PASS", detail: "Assumptions section present." }
-      : {
-          id: "RC-5",
-          status: "VIOLATION",
-          detail: "Missing `## Assumptions` section.",
-          evidence: [`${file}: Assumptions`],
-          fix: "Add `## Assumptions` to the RCA.",
-        }
-  );
-
-  return {
-    gate: "RC",
-    name: "RCA Validation",
-    status: buildStatus(criteria),
-    criteria,
-    durationMs: Date.now() - start,
-    file,
-    artifactKind: "rca",
-  };
+  const criteria = buildRcaCriteria(file, sections);
+  return { gate: "RC", name: "RCA Validation", status: buildStatus(criteria), criteria, durationMs: Date.now() - start, file, artifactKind: "rca" };
 }
 
 function listCandidateFiles(dir: string, includeArchived = false): string[] {
