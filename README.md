@@ -1,8 +1,26 @@
 # spec-check
 
-A local spec-driven development runtime that exposes the same checks over MCP stdio and a local HTTP daemon. An LLM or script calls it, receives a deterministic verdict with specific violations, and must satisfy those violations before the workflow advances.
+LLMs are powerful but structurally inconsistent. Given the same task twice, a model may produce a thorough specification once and skip it entirely the next time. Without enforcement, spec-driven development becomes aspirational rather than operational — the discipline degrades under time pressure, and codebases accumulate undocumented decisions, untracked bugs, and architecture nobody can explain.
 
-Runs entirely offline. No code, intent, or metrics leave the machine.
+spec-check solves this by acting as a local gatekeeper. An LLM calls it at defined checkpoints, receives a deterministic verdict with specific violations, and must satisfy those violations before the workflow advances. The correction loop is closed autonomously — no human reviewer required at each step.
+
+It runs entirely offline. No code, intent, or metrics leave the machine.
+
+---
+
+## Scientific basis
+
+spec-check applies **formal specification enforcement** to LLM-assisted development workflows. The core insight is that LLM output variability can be bounded by introducing deterministic external validators — analogous to type checkers or proof verifiers in formal methods — that evaluate artifacts against a fixed rule set and produce structured verdicts rather than probabilistic assessments.
+
+**Gate-based workflow control.** The five-gate sequence (G1→G5) implements a directed acyclic dependency graph over spec artifact types. Each gate is a predicate function over a document corpus; a gate passes only when all its rule predicates evaluate to true. The system enforces monotonic forward progress: later gates cannot pass while earlier ones block.
+
+**Rule-based NLP over structured corpora.** Linguistic checks (intent quality, GIVEN/WHEN/THEN structure, causal language detection) use pattern matching and heuristic scoring rather than embedding-based similarity. This makes verdicts reproducible across models, runtimes, and time — essential for a gate system where the same input must always produce the same verdict.
+
+**Cyclomatic and cognitive complexity as proxy metrics.** Code quality checks use McCabe's cyclomatic complexity (CC = 1 + number of linearly independent paths through a control flow graph) and cognitive complexity (a measure of how difficult code is to understand, weighted by nesting depth). These serve as proxy metrics for defect probability and maintainability.
+
+**Longitudinal compliance tracking.** Every gate check writes a structured record to a local columnar store (Parquet via DuckDB). This enables time-series analysis of spec adherence, assumption invalidation rates, and model-level compliance comparisons — treating software quality as a measurable, improvable signal rather than a static audit.
+
+**Mutation testing integration.** The `check_mutation_score` tool integrates with language-specific mutation frameworks (Stryker, mutmut, cargo-mutants) to measure test suite effectiveness by the fraction of artificially introduced defects that are caught. This distinguishes test coverage (lines executed) from test adequacy (defects detected).
 
 ---
 
