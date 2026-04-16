@@ -7,7 +7,8 @@ class SpecCheck < Formula
 
   bottle do
     root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.1"
-    # Bottles must be rebuilt after node@22 → node@24 and duckdb 0.10 → 1.4.4 bump
+    sha256 cellar: :any_skip_relocation, arm64_sequoia: "e0bf1f9dafdfbc20094e9ef910e95f71b752a98c406dbd3600e4e796ef240209"
+    sha256 cellar: :any_skip_relocation, arm64_sonoma: "eb0eca250829d9472be7634f422e6d8620ad1736cca5b6bea83c467836f744f2"
   end
 
   depends_on "node@24"
