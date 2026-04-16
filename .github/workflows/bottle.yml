@@ -1,0 +1,115 @@
+name: Homebrew Bottle
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build bottles for (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # ── Build one bottle per macOS architecture ──────────────────────────────────
+  build:
+    name: Bottle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-13]   # arm64 (Sonoma), x86_64 (Ventura)
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Cache Homebrew RubyGems
+        uses: actions/cache@v4
+        with:
+          path: ${{ steps.set-up-homebrew.outputs.gems-path }}
+          key: ${{ runner.os }}-rubygems-${{ steps.set-up-homebrew.outputs.gems-hash }}
+          restore-keys: ${{ runner.os }}-rubygems-
+
+      - name: Install Homebrew Bundler RubyGems
+        run: brew install-bundler-gems --groups=all
+
+      - name: Resolve tag name
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Tap spec-check from this repo
+        run: |
+          brew tap cablepull/spec-check https://github.com/cablepull/spec-check
+          brew tap-info cablepull/spec-check
+
+      - name: Build bottle
+        run: |
+          brew install --build-bottle cablepull/spec-check/spec-check
+          brew bottle \
+            --json \
+            --root-url "https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}" \
+            cablepull/spec-check/spec-check
+
+      - name: Upload bottle to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.name }}
+          files: '*.tar.gz'
+
+      - name: Upload bottle JSON as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottle-json-${{ matrix.os }}
+          path: '*.json'
+
+  # ── Patch the formula with bottle sha256s and commit to main ─────────────────
+  update-formula:
+    name: Update formula with bottle hashes
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Use a PAT so the commit triggers CI on the resulting push.
+          # If you only have GITHUB_TOKEN, the push will succeed but won't
+          # re-trigger workflows (GitHub's loop-prevention rule).
+          token: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN || secrets.GITHUB_TOKEN }}
+
+      - name: Download all bottle JSONs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bottle-json-*
+          merge-multiple: true
+
+      - name: Install Python (for merge script)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Merge bottle hashes into formula
+        run: |
+          python3 .github/scripts/merge_bottles.py \
+            Formula/spec-check.rb \
+            "https://github.com/${{ github.repository }}/releases/download/${{ needs.build.outputs.tag || github.ref_name }}"
+
+      - name: Commit updated formula
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/spec-check.rb
+          git diff --cached --quiet || \
+            git commit -m "chore(formula): add bottle references for ${GITHUB_REF_NAME}"
+          git push

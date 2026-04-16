@@ -1,0 +1,27 @@
+name: Formula Audit
+
+on:
+  push:
+    branches: [main]
+    paths: ['Formula/**']
+  pull_request:
+    paths: ['Formula/**']
+
+jobs:
+  audit:
+    name: brew audit
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Tap this repo
+        run: brew tap cablepull/spec-check https://github.com/cablepull/spec-check
+
+      - name: Audit formula style
+        run: brew audit --strict cablepull/spec-check/spec-check
+
+      - name: Check formula syntax
+        run: ruby -c Formula/spec-check.rb
