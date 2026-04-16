@@ -364,60 +364,77 @@ export function buildSpecGuide(): SpecGuide {
   };
 }
 
-export function specGuideToText(guide: SpecGuide): string {
-  const lines: string[] = [];
+function renderIndentedBlock(lines: string[], text: string, prefix: string): void {
+  for (const line of text.split("\n")) lines.push(`${prefix}${line}`);
+}
 
+function appendGuideHeader(lines: string[], guide: SpecGuide): void {
   lines.push("spec-check Spec Writing Guide");
   lines.push("═".repeat(70));
   lines.push("");
   lines.push(guide.quick_start);
   lines.push("");
+}
 
+function appendGuideWorkflow(lines: string[], workflow: string[]): void {
   lines.push("WORKFLOW");
   lines.push("─".repeat(70));
-  for (const step of guide.workflow) lines.push(`  ${step}`);
+  for (const step of workflow) lines.push(`  ${step}`);
   lines.push("");
+}
 
-  for (const section of guide.sections) {
-    lines.push(`${section.file}  (${section.gate} — ${section.gate_name})`);
-    lines.push("─".repeat(70));
-    lines.push(section.summary);
-    lines.push("");
-
-    lines.push("  Rules:");
-    for (const rule of section.rules) lines.push(`    • ${rule}`);
-    lines.push("");
-
-    lines.push("  Examples (correct vs incorrect):");
-    for (const ex of section.examples) {
-      lines.push(`    ─── ${ex.label}`);
-      lines.push("    ✅ CORRECT:");
-      for (const l of ex.correct.split("\n")) lines.push(`       ${l}`);
-      lines.push("    ❌ INCORRECT:");
-      for (const l of ex.incorrect.split("\n")) lines.push(`       ${l}`);
-      lines.push("    WHY:");
-      for (const l of ex.why.split("\n")) lines.push(`       ${l}`);
-      lines.push("");
-    }
-
-    lines.push("  Common violations:");
-    for (const v of section.common_violations) lines.push(`    ⚠ ${v}`);
+function appendGuideExamples(lines: string[], examples: GuideExample[]): void {
+  lines.push("  Examples (correct vs incorrect):");
+  for (const example of examples) {
+    lines.push(`    ─── ${example.label}`);
+    lines.push("    ✅ CORRECT:");
+    renderIndentedBlock(lines, example.correct, "       ");
+    lines.push("    ❌ INCORRECT:");
+    renderIndentedBlock(lines, example.incorrect, "       ");
+    lines.push("    WHY:");
+    renderIndentedBlock(lines, example.why, "       ");
     lines.push("");
   }
+}
 
+function appendGuideSection(lines: string[], section: GuideSection): void {
+  lines.push(`${section.file}  (${section.gate} — ${section.gate_name})`);
+  lines.push("─".repeat(70));
+  lines.push(section.summary);
+  lines.push("");
+  lines.push("  Rules:");
+  for (const rule of section.rules) lines.push(`    • ${rule}`);
+  lines.push("");
+  appendGuideExamples(lines, section.examples);
+  lines.push("  Common violations:");
+  for (const violation of section.common_violations) lines.push(`    ⚠ ${violation}`);
+  lines.push("");
+}
+
+function appendCrossCuttingRules(lines: string[], rules: string[]): void {
   lines.push("CROSS-CUTTING RULES (apply to all files)");
   lines.push("─".repeat(70));
-  for (const rule of guide.cross_cutting) {
+  for (const rule of rules) {
     const [head, ...rest] = rule.split(": ");
     lines.push(`  ${head}:`);
     if (rest.length > 0) lines.push(`    ${rest.join(": ")}`);
     lines.push("");
   }
+}
 
+function appendGateStatusGlossary(lines: string[], glossary: string[]): void {
   lines.push("GATE STATUS GLOSSARY");
   lines.push("─".repeat(70));
-  for (const entry of guide.gate_status_glossary) lines.push(`  ${entry}`);
+  for (const entry of glossary) lines.push(`  ${entry}`);
   lines.push("");
+}
 
+export function specGuideToText(guide: SpecGuide): string {
+  const lines: string[] = [];
+  appendGuideHeader(lines, guide);
+  appendGuideWorkflow(lines, guide.workflow);
+  for (const section of guide.sections) appendGuideSection(lines, section);
+  appendCrossCuttingRules(lines, guide.cross_cutting);
+  appendGateStatusGlossary(lines, guide.gate_status_glossary);
   return lines.join("\n");
 }

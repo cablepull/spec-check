@@ -865,19 +865,41 @@ type RollupProjectEntry = {
   gates: Record<string, number[]>;
   ccs: number[];
   mutationScores: number[];
-  supersessions: number;
-  unresolvedRcas: number;
+  supersessionRecords: any[];
+  projectPaths: Set<string>;
 };
 
 function getOrInitProjectEntry(map: Map<string, RollupProjectEntry>, key: string): RollupProjectEntry {
   if (!map.has(key)) {
-    map.set(key, { gates: { G1: [], G2: [], G3: [], G4: [], G5: [] }, ccs: [], mutationScores: [], supersessions: 0, unresolvedRcas: 0 });
+    map.set(key, {
+      gates: { G1: [], G2: [], G3: [], G4: [], G5: [] },
+      ccs: [],
+      mutationScores: [],
+      supersessionRecords: [],
+      projectPaths: new Set<string>(),
+    });
   }
   return map.get(key)!;
 }
 
 function rollupProjectKey(row: any): string {
   return `${row.org ?? "local"}/${row.repo ?? "unknown"}/${row.service ?? "root"}`;
+}
+
+function rememberProjectPath(entry: RollupProjectEntry, row: any): void {
+  if (typeof row.project_path === "string" && row.project_path.trim()) {
+    entry.projectPaths.add(resolve(row.project_path));
+  }
+}
+
+function assumptionModelFromText(text: string): string {
+  const author = text.match(/^\*\*Author:\*\*\s*(.+)$/im)?.[1]?.trim();
+  return author || "unknown";
+}
+
+function preferredProjectPath(entry: RollupProjectEntry): string | null {
+  const paths = [...entry.projectPaths].sort((a, b) => a.localeCompare(b));
+  return paths[0] ?? null;
 }
 
 function accumulateViolations(row: any, violationCounts: Map<string, number>): void {
@@ -944,6 +966,7 @@ function populateGateRowMaps(
   for (const row of gateRows) {
     const pass = gateStatusPass(row.gate_status) ? 100 : 0;
     const projectEntry = getOrInitProjectEntry(projectMap, rollupProjectKey(row));
+    rememberProjectPath(projectEntry, row);
     if (projectEntry.gates[row.gate]) projectEntry.gates[row.gate]!.push(pass);
     const model = row.llm_model ?? row.llm_id ?? "unknown";
     const modelEntry = modelGateMap.get(model) ?? { gates: { G1: [], G2: [], G3: [], G4: [], G5: [] }, runs: 0 };
@@ -970,7 +993,9 @@ function populateComplexityRowMaps(
 ): void {
   for (const row of complexityRows) {
     const ccs = (row.results ?? []).map((item: any) => item.cc).filter((v: any) => typeof v === "number");
-    getOrInitProjectEntry(projectMap, rollupProjectKey(row)).ccs.push(...ccs);
+    const projectEntry = getOrInitProjectEntry(projectMap, rollupProjectKey(row));
+    rememberProjectPath(projectEntry, row);
+    projectEntry.ccs.push(...ccs);
     const model = row.llm_model ?? row.llm_id ?? "unknown";
     const modelEntry = modelCcMap.get(model) ?? { values: [], runs: 0 };
     modelEntry.values.push(average(ccs) ?? 0);
@@ -982,7 +1007,11 @@ function populateComplexityRowMaps(
 function populateMutationRowMap(mutationRows: any[], projectMap: Map<string, RollupProjectEntry>): void {
   for (const row of mutationRows) {
     const score = numberOrNull(row.score);
-    if (score !== null) getOrInitProjectEntry(projectMap, rollupProjectKey(row)).mutationScores.push(score);
+    if (score !== null) {
+      const projectEntry = getOrInitProjectEntry(projectMap, rollupProjectKey(row));
+      rememberProjectPath(projectEntry, row);
+      projectEntry.mutationScores.push(score);
+    }
   }
 }
 
@@ -992,11 +1021,9 @@ function populateSupersessionRowMaps(
   modelAssumptionMap: Map<string, { made: number; invalidated: number }>
 ): void {
   for (const row of supersessionRows) {
-    getOrInitProjectEntry(projectMap, rollupProjectKey(row)).supersessions += 1;
-    const model = row.llm_model ?? row.llm_id ?? row.original_model ?? "unknown";
-    const modelEntry = modelAssumptionMap.get(model) ?? { made: 0, invalidated: 0 };
-    modelEntry.invalidated += 1;
-    modelAssumptionMap.set(model, modelEntry);
+    const projectEntry = getOrInitProjectEntry(projectMap, rollupProjectKey(row));
+    rememberProjectPath(projectEntry, row);
+    projectEntry.supersessionRecords.push(row);
   }
 }
 
@@ -1042,6 +1069,82 @@ function buildRollupMaps(
   return { projectMap, modelGateMap, modelAssumptionMap, modelCcMap, agentGateMap };
 }
 
+function computeUnresolvedRcaCount(targetPath: string): number {
+  const rcaDir = join(resolve(targetPath), "rca");
+  if (!existsSync(rcaDir)) return 0;
+  return readdirSync(rcaDir)
+    .filter((file) => file.endsWith(".md"))
+    .filter((file) => !isRcaResolved(readFileSync(join(rcaDir, file), "utf-8")))
+    .length;
+}
+
+function computeRollupSupersessionRate(targetPath: string, supersessionRecords: any[]): number | null {
+  const markdownArtifacts = walkMarkdown(resolve(targetPath));
+  if (markdownArtifacts.length === 0) return null;
+  const supersededArtifacts = new Set(
+    supersessionRecords
+      .map((item: any) => item.archive_artifact ?? item.original_artifact)
+      .filter((value: unknown): value is string => typeof value === "string" && value.length > 0)
+  ).size;
+  return (supersededArtifacts / markdownArtifacts.length) * 100;
+}
+
+function buildModelAssumptionMap(projectMap: Map<string, RollupProjectEntry>): Map<string, { made: number; invalidated: number }> {
+  const modelAssumptionMap = new Map<string, { made: number; invalidated: number }>();
+  for (const entry of projectMap.values()) {
+    for (const projectPath of entry.projectPaths) {
+      if (!existsSync(projectPath)) continue;
+      const listing = listAssumptions(projectPath, true);
+      for (const item of listing.items) {
+        const model = assumptionModelFromText(readFileSync(item.artifact_path, "utf-8"));
+        const aggregate = modelAssumptionMap.get(model) ?? { made: 0, invalidated: 0 };
+        aggregate.made += item.assumptions.length;
+        aggregate.invalidated += item.assumptions.filter((row) => /invalidated/i.test(row.status)).length;
+        modelAssumptionMap.set(model, aggregate);
+      }
+    }
+  }
+  return modelAssumptionMap;
+}
+
+function buildAdoptionTrend(gateRows: any[], weights: ResolvedConfig["value"]["compliance_weights"]): TrendDirection {
+  const byDay = new Map<string, Map<string, Record<string, number[]>>>();
+  for (const row of gateRows) {
+    if (typeof row.timestamp !== "string" || row.timestamp.length < 10) continue;
+    const day = row.timestamp.slice(0, 10);
+    const project = rollupProjectKey(row);
+    const dayEntry = byDay.get(day) ?? new Map<string, Record<string, number[]>>();
+    const projectEntry = dayEntry.get(project) ?? { G1: [], G2: [], G3: [], G4: [], G5: [] };
+    if (projectEntry[row.gate]) projectEntry[row.gate]!.push(gateStatusPass(row.gate_status) ? 100 : 0);
+    dayEntry.set(project, projectEntry);
+    byDay.set(day, dayEntry);
+  }
+
+  const complianceSeries = [...byDay.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([, projects]) => {
+      const projectScores = [...projects.values()]
+        .map((gates) => {
+          const gateBreakdown = Object.fromEntries(
+            Object.entries(gates).map(([gate, values]) => [gate, values.length > 0 ? average(values) : null])
+          ) as Record<string, number | null>;
+          if (!Object.values(gateBreakdown).some((value) => value !== null)) return null;
+          return (
+            ((gateBreakdown.G1 ?? 0) * weights.G1) +
+            ((gateBreakdown.G2 ?? 0) * weights.G2) +
+            ((gateBreakdown.G3 ?? 0) * weights.G3) +
+            ((gateBreakdown.G4 ?? 0) * weights.G4) +
+            ((gateBreakdown.G5 ?? 0) * weights.G5)
+          );
+        })
+        .filter((value): value is number => value !== null);
+      return average(projectScores);
+    })
+    .filter((value): value is number => value !== null);
+
+  return trend(complianceSeries);
+}
+
 function buildRollupProjectResults(
   projectMap: Map<string, RollupProjectEntry>,
   config: ResolvedConfig
@@ -1054,6 +1157,7 @@ function buildRollupProjectResults(
 } {
   const projects: RollupMetrics["projects"] = [];
   for (const [project, entry] of projectMap.entries()) {
+    const projectPath = preferredProjectPath(entry);
     const gateBreakdown = Object.fromEntries(
       Object.entries(entry.gates).map(([gate, values]) => [gate, values.length > 0 ? average(values) : null])
     );
@@ -1070,8 +1174,8 @@ function buildRollupProjectResults(
       avg_cc: average(entry.ccs),
       max_cc: entry.ccs.length > 0 ? Math.max(...entry.ccs) : null,
       latest_mutation_score: entry.mutationScores.length > 0 ? entry.mutationScores[entry.mutationScores.length - 1]! : null,
-      supersession_rate: entry.supersessions,
-      unresolved_rca_count: entry.unresolvedRcas,
+      supersession_rate: projectPath ? computeRollupSupersessionRate(projectPath, entry.supersessionRecords) : null,
+      unresolved_rca_count: projectPath ? computeUnresolvedRcaCount(projectPath) : 0,
     });
   }
   projects.sort((a, b) => (b.compliance_score ?? -1) - (a.compliance_score ?? -1));
@@ -1225,7 +1329,8 @@ export async function getRollupMetrics(
 
   const { gateRows, complexityRows, mutationRows, supersessionRows, agentStateRows, violationCounts, assumptionCategoryCounts } = categorizeRollupRows(rows, sinceMs);
 
-  const { projectMap, modelGateMap, modelAssumptionMap, modelCcMap, agentGateMap } = buildRollupMaps(gateRows, complexityRows, mutationRows, supersessionRows, agentStateRows);
+  const { projectMap, modelGateMap, modelCcMap, agentGateMap } = buildRollupMaps(gateRows, complexityRows, mutationRows, supersessionRows, agentStateRows);
+  const modelAssumptionMap = buildModelAssumptionMap(projectMap);
 
   const projectResults = buildRollupProjectResults(projectMap, config);
   result.projects = projectResults.projects;
@@ -1251,10 +1356,7 @@ export async function getRollupMetrics(
     .slice(0, 5)
     .map(([category, count]) => ({ category, count }));
 
-  const complianceSeries = result.projects
-    .map((item) => item.compliance_score)
-    .filter((v): v is number => v !== null);
-  result.adoption_trend = trend(complianceSeries);
+  result.adoption_trend = buildAdoptionTrend(gateRows, config.value.compliance_weights);
 
   if (result.projects.length === 0) notes.push({ code: "NO_DATA", detail: "No cross-project records were available in the storage root." });
   result.durationMs = Date.now() - start;

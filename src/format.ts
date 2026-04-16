@@ -203,42 +203,87 @@ export function formatDependencyCheckResult(result: {
 }): string {
   const lines = [
     `Dependency Check (${result.durationMs}ms)`,
-    `Package managers: ${Object.entries(result.available_package_managers).filter(([, ok]) => ok).map(([name]) => name).join(", ") || "none"}`,
-    `Runtimes: ${Object.entries(result.available_runtimes).filter(([, ok]) => ok).map(([name]) => name).join(", ") || "none"}`,
+    `Package managers: ${joinAvailableKeys(result.available_package_managers)}`,
+    `Runtimes: ${joinAvailableKeys(result.available_runtimes)}`,
     "─".repeat(60),
     "Installed:",
   ];
+  appendInstalledDependencies(lines, result.installed);
 
-  if (result.installed.length === 0) lines.push("  none");
-  for (const dep of result.installed) {
+  lines.push("─".repeat(60));
+  lines.push("Missing:");
+  appendMissingDependencies(lines, result.missing);
+
+  lines.push("─".repeat(60));
+  lines.push("Unavailable metrics:");
+  appendUnavailableMetrics(lines, result.unavailable_metrics);
+
+  return lines.join("\n");
+}
+
+function joinAvailableKeys(values: Record<string, boolean>): string {
+  return Object.entries(values)
+    .filter(([, ok]) => ok)
+    .map(([name]) => name)
+    .join(", ") || "none";
+}
+
+function appendInstalledDependencies(
+  lines: string[],
+  installed: Array<{ name: string; version: string | null; covers: string[]; languages: string[] }>
+): void {
+  if (installed.length === 0) {
+    lines.push("  none");
+    return;
+  }
+
+  for (const dep of installed) {
     lines.push(`  ✅ ${dep.name}${dep.version ? ` (${dep.version})` : ""}`);
     lines.push(`     covers: ${dep.covers.join(", ")}`);
     lines.push(`     languages: ${dep.languages.join(", ")}`);
   }
+}
 
-  lines.push("─".repeat(60));
-  lines.push("Missing:");
-  if (result.missing.length === 0) lines.push("  none");
-  for (const dep of result.missing) {
+function appendMissingDependencies(
+  lines: string[],
+  missing: Array<{
+    name: string;
+    covers: string[];
+    languages: string[];
+    install_commands: Record<string, string>;
+    missing_reason?: string;
+    requires_runtime: string;
+    runtime_available: boolean;
+  }>
+): void {
+  if (missing.length === 0) {
+    lines.push("  none");
+    return;
+  }
+
+  for (const dep of missing) {
     lines.push(`  ❌ ${dep.name}`);
     lines.push(`     runtime: ${dep.requires_runtime} (${dep.runtime_available ? "available" : "missing"})`);
     if (dep.missing_reason) lines.push(`     reason: ${dep.missing_reason}`);
     lines.push(`     covers: ${dep.covers.join(", ")}`);
     lines.push(`     languages: ${dep.languages.join(", ")}`);
-    const installEntries = Object.entries(dep.install_commands);
-    if (installEntries.length > 0) {
-      lines.push(`     install: ${installEntries.map(([mgr, cmd]) => `${mgr}: ${cmd}`).join(" | ")}`);
-    }
+    const installLine = Object.entries(dep.install_commands).map(([mgr, cmd]) => `${mgr}: ${cmd}`).join(" | ");
+    if (installLine) lines.push(`     install: ${installLine}`);
+  }
+}
+
+function appendUnavailableMetrics(
+  lines: string[],
+  unavailableMetrics: Array<{ metric: string; languages: string[]; dependencies: string[] }>
+): void {
+  if (unavailableMetrics.length === 0) {
+    lines.push("  none");
+    return;
   }
 
-  lines.push("─".repeat(60));
-  lines.push("Unavailable metrics:");
-  if (result.unavailable_metrics.length === 0) lines.push("  none");
-  for (const item of result.unavailable_metrics) {
+  for (const item of unavailableMetrics) {
     lines.push(`  • ${item.metric}: ${item.languages.join(", ")} via ${item.dependencies.join(", ")}`);
   }
-
-  return lines.join("\n");
 }
 
 export function formatInstallDependencyResult(

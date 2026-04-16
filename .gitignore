@@ -6,3 +6,5 @@ dist/
 coverage/
 *.tsbuildinfo
 .stryker-tmp/
+.serena/.gitignore
+.gitignore

@@ -14,7 +14,10 @@ Feature F-19 (ADR Blocking on Structural Diff Triggers),
 Feature F-20 (Reconciliation Gate),
 Feature F-21 (Evidence Artifacts),
 Feature F-22 (Workflow Governance),
-Feature F-23 (Agent Identity and Session Attribution)
+Feature F-23 (Agent Identity and Session Attribution),
+Feature F-24 (Local Daemon Runtime),
+Feature F-25 (HTTP JSON Tool API),
+Feature F-26 (Multi-Project Registry and Routing)
 
 ## Requirement Traceability
 
@@ -69,51 +72,85 @@ This design satisfies the following requirement rules:
 | R-57 | Agents distinguished by identity and kind | Actor Identity Resolver + Agent State Store (Story 029) |
 | R-58 | Agent/session identity persisted on records | Storage Writer + Actor Identity fields (Stories 029–030) |
 | R-59 | Agent-session workflow tools exposed | MCP Tool Router + Workflow Session Tools (Story 029) |
+| R-60–R-62 | Local daemon runtime | Local Daemon + Shared Tool Service + MCP Adapter |
+| R-63–R-65 | HTTP JSON tool API | HTTP API Adapter + Shared Tool Service + Actor Identity Resolver |
+| R-66–R-68 | Multi-project registry and routing | Project Registry + Project Resolver + Per-Project Lock Manager |
 
 ## Components
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      MCP Server (stdio)                     │
-│                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  Tool Router │  │   Identity   │  │  Config Loader   │  │
-│  │              │  │  Resolver    │  │  (global+project)│  │
-│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘  │
-│         │                 │                    │            │
-│         ▼                 ▼                    ▼            │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │                   Gate Engine                        │   │
-│  │  G1:Intent  G2:Reqs  G3:Design  G4:Tasks  G5:Exec  │   │
-│  └──────────────────────┬──────────────────────────────┘   │
-│                          │                                  │
-│  ┌───────────────────────┼──────────────────────────────┐  │
-│  │    Analyser Layer     │                              │  │
-│  │  ┌──────────┐  ┌──────┴──────┐  ┌────────────────┐  │  │
-│  │  │ NLP      │  │  AST Tier 1 │  │  Tier 2/lizard │  │  │
-│  │  │ Engine   │  │  (TS/Py/Go) │  │  (other langs) │  │  │
-│  │  └──────────┘  └─────────────┘  └────────────────┘  │  │
-│  └───────────────────────────────────────────────────────┘  │
-│                                                             │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │              Metrics and Storage Layer                 │  │
-│  │   Parquet Writer │ DuckDB Query Engine │ Glob Router  │  │
-│  └───────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Transport Adapters                              │
+│                                                                         │
+│   MCP Server (stdio)                 Local Daemon / HTTP Server         │
+│   ┌──────────────┐                   ┌──────────────────────────────┐    │
+│   │ MCP Adapter  │                   │ Dashboard + HTTP JSON API    │    │
+│   └──────┬───────┘                   └──────────────┬───────────────┘    │
+│          │                                          │                    │
+├──────────┴──────────────────────────────────────────┴────────────────────┤
+│                         Shared Tool Service Layer                         │
+│                                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐                │
+│  │  Tool Router │  │   Identity   │  │  Config Loader   │                │
+│  │              │  │  Resolver    │  │  (global+project)│                │
+│  └──────┬───────┘  └──────┬───────┘  └────────┬─────────┘                │
+│         │                 │                    │                          │
+│         ├─────────────────┴──────────────┐     │                          │
+│         ▼                                ▼     ▼                          │
+│  ┌────────────────────┐        ┌────────────────────────┐                 │
+│  │  Project Registry  │        │   Per-Project Locks    │                 │
+│  └─────────┬──────────┘        └────────────┬───────────┘                 │
+│            │                                 │                             │
+│            └─────────────────┬───────────────┘                             │
+│                              ▼                                             │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                           Gate Engine                                 │  │
+│  │       G1:Intent  G2:Reqs  G3:Design  G4:Tasks  G5:Exec                │  │
+│  └───────────────────────────────┬──────────────────────────────────────┘  │
+│                                  │                                          │
+│  ┌────────────────────────────────┼──────────────────────────────────────┐  │
+│  │          Analyser Layer        │                                      │  │
+│  │  ┌──────────┐  ┌─────────────┐ │  ┌────────────────┐                  │  │
+│  │  │ NLP      │  │ AST Tier 1  │ │  │ Tier 2/lizard │                  │  │
+│  │  │ Engine   │  │ (TS/Py/Go)  │ │  │ (other langs) │                  │  │
+│  │  └──────────┘  └─────────────┘ │  └────────────────┘                  │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                          │
+│  ┌──────────────────────────────────────────────────────────────────────┐  │
+│  │                    Metrics and Storage Layer                         │  │
+│  │      Parquet Writer │ DuckDB Query Engine │ Glob Router              │  │
+│  └──────────────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 ## Component Descriptions
 
-### MCP Server (stdio transport)
-Entry point. Implements the MCP protocol over stdio using `@modelcontextprotocol/sdk`.
-Handles tool listing and tool dispatch. Wraps all tool execution in a try/catch boundary
-that returns structured errors — never raw stack traces. Attaches resolved LLM identity
-and server version to every response envelope.
+### MCP Adapter (stdio transport)
+Compatibility entry point. Implements the MCP protocol over stdio using
+`@modelcontextprotocol/sdk`. Handles MCP tool listing and request translation, then delegates
+tool execution to the shared Tool Service. Wraps transport-level failures in structured
+errors and preserves the common response envelope.
+
+### Local Daemon / HTTP Server
+Long-running local runtime that serves the dashboard, health endpoint, and JSON tool API
+from one process. Binds to loopback by default. Does not own or depend on stdio, so
+multiple clients can query metrics, call tools, and inspect dashboard state concurrently.
 
 ### Tool Router
-Maps incoming tool names to handler functions. Returns a structured `UNKNOWN_TOOL` error
-for unrecognised names. Validates that required arguments are present before dispatching;
-returns `MISSING_ARGUMENT` errors naming the missing field.
+Maps incoming tool names to handler functions independent of transport. Returns a structured
+`UNKNOWN_TOOL` error for unrecognised names. Validates that required arguments are present
+before dispatching; returns `MISSING_ARGUMENT` errors naming the missing field.
+
+### Project Registry
+Stores stable project identifiers and canonical filesystem paths for daemon-mode use.
+Supports explicit project registration, duplicate detection by canonical path, and
+path lookup by `project_id`. Prevents shared-daemon requests from depending on the
+server process's current working directory.
+
+### Per-Project Lock Manager
+Serializes same-project writes and workflow-state mutations while allowing different
+projects to proceed independently. Read-only operations may run concurrently. Lock scope
+is keyed by resolved canonical project identity rather than by transport session.
 
 ### Identity Resolver
 Resolves the calling LLM identity in priority order: tool argument → `SPEC_CHECK_LLM`
@@ -125,6 +162,11 @@ Reads and merges `~/.spec-check/config.json` (global) and `<project-root>/spec-c
 (project). Re-reads on every tool call. Validates JSON and emits structured
 `CONFIG_PARSE_ERROR` or `CONFIG_VALIDATION_ERROR` on problems. Exposes a `resolve(key)`
 function that returns the effective value and its source (`default`, `global`, `project`).
+
+### HTTP JSON API Adapter
+Publishes the tool catalog and a generic `POST /api/tools/call` endpoint for clients that
+do not speak MCP. Reuses the exact input schemas and response envelopes defined by the
+shared Tool Router so HTTP and MCP behavior remain aligned.
 
 ### Gate Engine
 Orchestrates gate execution. Runs G1 → G2 → G3 → G4 → G5 in sequence. Halts progression
@@ -327,7 +369,7 @@ separation keeps the write path simple and the query path powerful without coupl
 
 | # | Assumption | Basis | Impact if wrong |
 |---|-----------|-------|-----------------|
-| A1 | stdio transport is sufficient for all LLM clients | Inferred from MCP SDK defaults and Claude Code's transport model; HTTP not requested | A second transport layer would be needed for non-stdio clients |
+| A1 | Loopback-bound HTTP is acceptable within the project's definition of local-only execution | Required to support non-MCP clients and a shared dashboard/API daemon without exposing remote network access | If loopback HTTP is considered non-local, only stdio integrations would remain acceptable and multi-client interoperability would be constrained |
 | A2 | @typescript-eslint/typescript-estree provides sufficient AST fidelity for CC computation | Chosen because it is the de-facto standard TS parser; not benchmarked against alternatives | CC values may differ slightly from other tools; calibrate thresholds if discrepancies arise |
 | A3 | DuckDB npm package installs cleanly without system libraries | Assumed based on typical macOS/Linux npm environments; not tested on restricted CI agents | Storage falls back to JSONL-only; metrics queries would be unavailable until DuckDB installs |
 | A4 | lizard's supported machine-readable output shape is stable across minor versions | Inferred from lizard's versioning history; not contractually guaranteed | Tier 2 parser would need a version check and output adapter if the CLI changes |

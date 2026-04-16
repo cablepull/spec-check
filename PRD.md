@@ -46,6 +46,10 @@ stored as Parquet files queryable with DuckDB and glob patterns.
 10. **Agent-aware.** The tool can distinguish concurrent callers by agent/session identity,
     persist their reported state, and attribute behavior across planner, implementer,
     reviewer, human, and CI actors.
+11. **Transport-neutral.** The same tool contract must be available through MCP and a
+    local HTTP JSON API so any local LLM runtime can interoperate with the engine.
+12. **Multi-project.** A shared local runtime may host multiple registered projects at
+    once without conflating their state, metrics, or workflow locks.
 
 ---
 
@@ -574,7 +578,9 @@ type FailureReason =
 ### 10.1 Engine
 
 **DuckDB** for querying. **Parquet** for storage. All data lives on the local filesystem.
-No database server. No daemon. DuckDB reads Parquet files directly via glob patterns.
+No external database server is required. A local daemon runtime is permitted and serves as
+the shared control plane for dashboard, HTTP API, project registry, and concurrency control.
+DuckDB reads Parquet files directly via glob patterns.
 
 ### 10.2 File naming convention
 
@@ -707,6 +713,31 @@ summary_from_agent
 
 The caller reports this state through dedicated workflow tools. The server responds with
 computed obligations such as `must_call_next`, `should_call_metrics`, and `blocked_by`.
+
+### 10.4.3 Transport model
+
+Spec-check exposes one transport-agnostic tool contract through two local adapters:
+
+- **MCP stdio adapter** for MCP-aware clients such as Claude Desktop and similar tools
+- **HTTP JSON adapter** for local dashboards, scripts, CI jobs, editor extensions, and
+  LLM runtimes that do not speak MCP
+
+Both adapters must publish the same tool catalog, accept the same logical arguments, and
+return the same `data` / `meta` / `workflow` response envelope. Transport-specific concerns
+such as JSON-RPC framing remain isolated to the adapter layer.
+
+### 10.4.4 Project registry
+
+When running as a daemon, spec-check must maintain an explicit project registry so tool calls
+can target a stable `project_id` instead of relying on the daemon's current working directory.
+
+Registry invariants:
+
+- every registered project has a canonical absolute path
+- duplicate registrations of the same canonical path are rejected or merged
+- daemon-mode requests must specify either `project_id` or `path`
+- requests that specify neither are rejected as ambiguous when multiple projects exist
+- per-project state, metrics, and locks are isolated by canonical project identity
 
 ### 10.5 Monorepo strategy
 
@@ -1121,7 +1152,6 @@ Tool responses that advance or evaluate workflow should include a machine-readab
 - Automatic spec generation
 - IDE plugin
 - Full CI/CD pipeline integration (pre-commit hooks in scope)
-- Web UI dashboard
 - Real-time file watching
 - Multi-language semantic analysis beyond rule-based NLP
 - SonarQube integration
@@ -1154,3 +1184,5 @@ Tool responses that advance or evaluate workflow should include a machine-readab
 6. **ADR-005** — `get_protocol` format and versioning strategy
 7. **Stories for workflow governance** — agent identity, session state, and next-action policy
 8. **Implementation** — gate-enforced, story-driven, tool verifying itself
+9. **Daemon hardening** — formalize per-project locking and conflict semantics
+10. **Remote transport review** — decide whether MCP-over-HTTP is required beyond local daemon + stdio MCP

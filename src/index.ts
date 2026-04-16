@@ -4,6 +4,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { existsSync, statSync } from "fs";
+import { pathToFileURL } from "url";
 import {
   CallToolRequestSchema,
   GetPromptRequestSchema,
@@ -55,11 +56,11 @@ import { buildSpecGuide, specGuideToText } from "./guide.js";
 import { actorFields, beginSession, computeWorkflowGuidance, latestAgentState, listAgentState, persistAgentState, type AgentStateReportResult } from "./workflow.js";
 import type { ToolArgs, Format, GateResult, ResolvedConfig, RunResult, ActorIdentity, WorkflowGuidance, AgentState } from "./types.js";
 
-const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.1.0";
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
-const TOOL_DEFINITIONS: Tool[] = [
+export const TOOL_DEFINITIONS: Tool[] = [
   {
     name: "get_spec_guide",
     description:
@@ -556,7 +557,7 @@ interface ToolCtx {
   meta: { llm_id: string; llm_source: string; server_version: string; agent_id: string; agent_kind: string; session_id: string; run_id: string };
 }
 
-type McpResponse = { content: Array<{ type: "text"; text: string }> };
+export type McpResponse = { content: Array<{ type: "text"; text: string }> };
 
 function actorMeta(actor: ActorIdentity): ToolCtx["meta"] {
   return {
@@ -1219,7 +1220,7 @@ const HANDLERS: Map<string, Handler> = new Map([
 
 // ── Server instructions (auto-injected into LLM context on connect) ───────────
 
-const SERVER_INSTRUCTIONS = `
+export const SERVER_INSTRUCTIONS = `
 You are connected to spec-check, a spec-driven development gate system.
 
 ## How spec-check works
@@ -1285,7 +1286,53 @@ tasks.md
 
 // ── Server bootstrap ──────────────────────────────────────────────────────────
 
-async function main() {
+export async function executeToolRequest(name: string, rawArgs: Record<string, unknown> = {}): Promise<McpResponse> {
+  const args = rawArgs as ToolArgs & Record<string, unknown>;
+
+  const projectRoot = args.path ? resolve(String(args.path)) : undefined;
+  const { config, errors: projConfigErrors } = loadConfig(projectRoot);
+  if (projConfigErrors.length > 0) {
+    process.stderr.write(
+      `[spec-check] project config warnings: ${projConfigErrors.map((e) => e.message).join("; ")}\n`
+    );
+  }
+  const storageMigration = migrateLegacyJsonlRecords(config.value.metrics.db_path, projectRoot);
+  if (storageMigration.migrated > 0 || storageMigration.removed > 0 || storageMigration.failed > 0) {
+    process.stderr.write(
+      `[spec-check] project storage migration: migrated=${storageMigration.migrated} removed=${storageMigration.removed} failed=${storageMigration.failed} remaining=${storageMigration.remaining}\n`
+    );
+  }
+
+  const actor = resolveActorIdentity(args, config);
+  const meta = actorMeta(actor);
+  const ctx: ToolCtx = { args, config, actor, meta };
+
+  const handler = HANDLERS.get(name);
+  if (!handler) {
+    return toMcpContent(envelope(
+      makeError(
+        "UNKNOWN_TOOL",
+        `Unknown tool: "${name}"`,
+        "This tool is not registered in spec-check.",
+        `Available tools: ${TOOL_DEFINITIONS.map((t) => t.name).join(", ")}`
+      ),
+      meta
+    ));
+  }
+
+  try {
+    return await handler(ctx);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[spec-check] tool error (${name}): ${message}\n`);
+    return toMcpContent(envelope(
+      makeError("INTERNAL_ERROR", "An internal error occurred", message, "Check stderr for details."),
+      meta
+    ));
+  }
+}
+
+export async function startMcpServer() {
   const server = new Server(
     { name: "spec-check", version: SERVER_VERSION },
     {
@@ -1507,50 +1554,7 @@ async function main() {
   // ── call_tool ──────────────────────────────────────────────────────────────
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: rawArgs } = request.params;
-    const args = (rawArgs ?? {}) as ToolArgs & Record<string, unknown>;
-
-    // Reload config with project root if 'path' is present
-    const projectRoot = args.path ? resolve(args.path) : undefined;
-    const { config, errors: projConfigErrors } = loadConfig(projectRoot);
-    if (projConfigErrors.length > 0) {
-      process.stderr.write(
-        `[spec-check] project config warnings: ${projConfigErrors.map((e) => e.message).join("; ")}\n`
-      );
-    }
-    const storageMigration = migrateLegacyJsonlRecords(config.value.metrics.db_path, projectRoot);
-    if (storageMigration.migrated > 0 || storageMigration.removed > 0 || storageMigration.failed > 0) {
-      process.stderr.write(
-        `[spec-check] project storage migration: migrated=${storageMigration.migrated} removed=${storageMigration.removed} failed=${storageMigration.failed} remaining=${storageMigration.remaining}\n`
-      );
-    }
-
-    const actor = resolveActorIdentity(args, config);
-    const meta = actorMeta(actor);
-    const ctx: ToolCtx = { args, config, actor, meta };
-
-    const handler = HANDLERS.get(name);
-    if (!handler) {
-      return toMcpContent(envelope(
-        makeError(
-          "UNKNOWN_TOOL",
-          `Unknown tool: "${name}"`,
-          "This tool is not registered in spec-check.",
-          `Available tools: ${TOOL_DEFINITIONS.map((t) => t.name).join(", ")}`
-        ),
-        meta
-      ));
-    }
-
-    try {
-      return await handler(ctx);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      process.stderr.write(`[spec-check] tool error (${name}): ${message}\n`);
-      return toMcpContent(envelope(
-        makeError("INTERNAL_ERROR", "An internal error occurred", message, "Check stderr for details."),
-        meta
-      ));
-    }
+    return executeToolRequest(name, (rawArgs ?? {}) as Record<string, unknown>);
   });
 
   // ── Start transport ────────────────────────────────────────────────────────
@@ -1559,7 +1563,10 @@ async function main() {
   process.stderr.write(`[spec-check] server v${SERVER_VERSION} ready\n`);
 }
 
-main().catch((err) => {
-  process.stderr.write(`[spec-check] fatal: ${String(err)}\n`);
-  process.exit(1);
-});
+const entryArg = process.argv[1];
+if (!process.env.VITEST && entryArg && import.meta.url === pathToFileURL(entryArg).href) {
+  startMcpServer().catch((err) => {
+    process.stderr.write(`[spec-check] fatal: ${String(err)}\n`);
+    process.exit(1);
+  });
+}

@@ -314,6 +314,38 @@
 - [ ] Add agent-session state history record storage and retrieval using Parquet + DuckDB globs (Rule: the MCP exposes agent-session workflow tools)
 - [ ] Include agent-aware workflow notes in `get_protocol` so different agent kinds receive differentiated guidance (Rule: the MCP distinguishes agents of the same or different kinds)
 
+## Story 031 — Local Daemon Runtime
+
+- [x] Add a real CLI entrypoint that starts MCP stdio mode by default (Rule: stdio MCP mode remains supported alongside daemon mode)
+- [x] Add `spec-check server` CLI mode that starts the local daemon runtime (Rule: spec-check can run as a long-lived local daemon independent of one MCP client)
+- [x] Bind the daemon to loopback by default and expose host/port through `GET /health` (Rule: the daemon remains local-only by default)
+- [x] Move MCP and daemon execution through the same shared tool executor (Rule: stdio MCP mode remains supported alongside daemon mode)
+- [x] Verify MCP stdio and daemon mode both execute the same tool contract for the same project path (Rule: stdio MCP mode remains supported alongside daemon mode)
+
+## Story 032 — HTTP JSON Tool API
+
+- [x] Expose `GET /api/tools` using the shared MCP tool definitions (Rule: the daemon exposes a machine-readable tool catalog over HTTP)
+- [x] Expose `POST /api/tools/call` using the shared tool executor and MCP-style response envelope (Rule: HTTP tool execution uses the same contract as MCP tool execution)
+- [x] Return structured request errors for missing or unknown tools over HTTP (Rule: HTTP tool execution uses the same contract as MCP tool execution)
+- [x] Merge actor metadata into HTTP tool calls without overriding explicit arguments (Rule: actor metadata can be supplied consistently over HTTP)
+- [x] Add runtime interoperability coverage proving MCP and HTTP stay aligned (Rule: HTTP tool execution uses the same contract as MCP tool execution)
+
+## Story 033 — Project Registry and Routing
+
+- [x] Add a persistent project registry with canonical path resolution (Rule: projects can be registered with stable identifiers)
+- [x] Expose `GET /api/projects` and `POST /api/projects` for project discovery and registration (Rule: projects can be registered with stable identifiers)
+- [x] Resolve HTTP tool calls by `project_id` before falling back to `path` (Rule: daemon-mode tool calls resolve a target project explicitly)
+- [x] Reject ambiguous daemon requests when multiple projects are registered and no project target is supplied (Rule: daemon-mode tool calls resolve a target project explicitly)
+- [x] Preserve project-scoped metrics and workflow behavior by routing each request to its resolved canonical path (Rule: project state and metrics remain isolated across registered projects)
+
+## Story 034 — Storage and Rollup Integrity Hardening
+
+- [x] Add regression tests for collision-safe storage paths (Rule: every check run must be persisted)
+- [x] Add regression tests for rollup supersession rate, unresolved RCA count, model assumption accuracy, and adoption trend (Rule: cross-project metrics must be queryable by glob)
+- [x] Harden parquet event filenames against concurrent collisions (Rule: every check run must be persisted)
+- [x] Make registry persistence atomic (Rule: projects can be registered with stable identifiers)
+- [x] Correct rollup semantics to use project rates, current RCA state, artifact-derived assumption metrics, and historical compliance buckets (Rule: cross-project metrics must be queryable by glob)
+
 ## Assumptions
 
 - The task list remains intentionally implementation-oriented and may reference concrete modules or tools because it is an execution artifact rather than a gate-validated requirements artifact.

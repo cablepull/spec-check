@@ -1,7 +1,7 @@
 // Story 017/018/019 — Metrics tests
 // Covers: getProjectMetrics, getRollupMetrics, formatProjectMetrics
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { getProjectMetrics, getRollupMetrics, formatProjectMetrics } from "../src/metrics.js";
@@ -437,6 +437,214 @@ describe("getRollupMetrics — cross-project", () => {
       // G1 pass rate should be 100% for both projects
       expect(p.gate_breakdown.G1).toBeCloseTo(100);
     }
+  });
+
+  it("uses artifact-derived assumption totals for model assumption accuracy", async () => {
+    const dir = makeTmp("spec-check-rollup-assumptions-");
+    const dbPath = join(dir, "db");
+    const projectPath = join(dir, "alpha");
+
+    mkdirSync(join(projectPath, "stories"), { recursive: true });
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    writeFileSync(join(projectPath, "intent.md"), "# Intent\n", "utf-8");
+    writeFileSync(join(projectPath, "requirements.md"), "# Requirements\n", "utf-8");
+    writeFileSync(join(projectPath, "design.md"), "# Design\n", "utf-8");
+    writeFileSync(join(projectPath, "tasks.md"), "# Tasks\n", "utf-8");
+    writeFileSync(
+      join(projectPath, "stories", "001-auth.md"),
+      [
+        "# Story 001: Auth",
+        "",
+        "**Author:** claude-sonnet-4-5",
+        "",
+        "## Assumptions",
+        "",
+        "| ID | Assumption | Basis | Status |",
+        "|----|------------|-------|--------|",
+        "| A-001 | Auth uses bearer tokens | inferred | assumed |",
+        "| A-002 | Session refresh is automatic | inferred | invalidated |",
+        "| A-003 | Login retries are queued | inferred | assumed |",
+        "| A-004 | MFA is optional | inferred | invalidated |",
+        "| A-005 | Tokens expire in 1 hour | inferred | assumed |",
+        "",
+      ].join("\n"),
+      "utf-8"
+    );
+
+    persistRecord(projectPath, dbPath, "gate-G1", "2025-11-03T10:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: projectPath,
+      timestamp: "2025-11-03T10:00:00.000Z",
+      gate: "G1",
+      status: "PASS",
+      gate_status: "PASS",
+      org: "alpha",
+      repo: "alpha",
+      service: "root",
+      criteria: [],
+      results: [],
+      llm_model: "claude-sonnet-4-5",
+      llm_id: "claude-sonnet-4-5",
+    });
+
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+    const model = result.model_assumption_accuracy.find((item) => item.model === "claude-sonnet-4-5");
+
+    expect(model).toBeDefined();
+    expect(model?.assumptions).toBe(5);
+    expect(model?.invalidated).toBe(2);
+    expect(model?.accuracy).toBeCloseTo(60);
+  });
+
+  it("reports supersession as a project rate rather than a raw count", async () => {
+    const dir = makeTmp("spec-check-rollup-supersession-");
+    const dbPath = join(dir, "db");
+    const projectPath = join(dir, "proj");
+
+    mkdirSync(projectPath, { recursive: true });
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    writeFileSync(join(projectPath, "intent.md"), "# Intent\n", "utf-8");
+    writeFileSync(join(projectPath, "requirements.md"), "# Requirements\n", "utf-8");
+    writeFileSync(join(projectPath, "design.md"), "# Design\n", "utf-8");
+    writeFileSync(join(projectPath, "tasks.md"), "# Tasks\n", "utf-8");
+
+    persistRecord(projectPath, dbPath, "gate-G1", "2025-11-04T10:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: projectPath,
+      timestamp: "2025-11-04T10:00:00.000Z",
+      gate: "G1",
+      status: "PASS",
+      gate_status: "PASS",
+      org: "acme",
+      repo: "proj",
+      service: "root",
+      criteria: [],
+      results: [],
+      llm_model: "claude-sonnet-4-5",
+      llm_id: "claude-sonnet-4-5",
+    });
+    persistRecord(projectPath, dbPath, "supersession", "2025-11-04T10:05:00.000Z", {
+      schema_version: 1,
+      check_type: "supersession",
+      project_path: projectPath,
+      timestamp: "2025-11-04T10:05:00.000Z",
+      org: "acme",
+      repo: "proj",
+      service: "root",
+      archive_artifact: join(projectPath, "design.md"),
+      original_artifact: join(projectPath, "design.md"),
+      replacement_artifact: join(projectPath, "stories", "001-update.md"),
+      assumption_text: "Design assumption changed",
+      reason: "Updated design",
+      llm_model: "claude-sonnet-4-5",
+      llm_id: "claude-sonnet-4-5",
+    });
+
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+
+    expect(result.projects[0]?.supersession_rate).toBeCloseTo(25);
+    expect(result.highest_supersession_projects[0]?.supersession_rate).toBeCloseTo(25);
+  });
+
+  it("reports unresolved RCA counts from the project rca directory", async () => {
+    const dir = makeTmp("spec-check-rollup-rca-");
+    const dbPath = join(dir, "db");
+    const projectPath = join(dir, "proj");
+
+    mkdirSync(join(projectPath, "rca"), { recursive: true });
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+    writeFileSync(join(projectPath, "intent.md"), "# Intent\n", "utf-8");
+    writeFileSync(
+      join(projectPath, "rca", "001-open.md"),
+      "# RCA-001\n\n## Spec Update Required\nYes\n\n## ADR Required\nNo\n",
+      "utf-8"
+    );
+    writeFileSync(
+      join(projectPath, "rca", "002-closed.md"),
+      "# RCA-002\n\n## Spec Update Required\nNo\n\n## ADR Required\nNo\n",
+      "utf-8"
+    );
+
+    persistRecord(projectPath, dbPath, "gate-G1", "2025-11-05T10:00:00.000Z", {
+      schema_version: 2,
+      check_type: "gate",
+      project_path: projectPath,
+      timestamp: "2025-11-05T10:00:00.000Z",
+      gate: "G1",
+      status: "PASS",
+      gate_status: "PASS",
+      org: "acme",
+      repo: "proj",
+      service: "root",
+      criteria: [],
+      results: [],
+      llm_model: "claude-sonnet-4-5",
+      llm_id: "claude-sonnet-4-5",
+    });
+
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+
+    expect(result.projects[0]?.unresolved_rca_count).toBe(1);
+    expect(result.unresolved_rcas[0]).toEqual({
+      project: result.projects[0]?.project,
+      unresolved: 1,
+    });
+  });
+
+  it("computes adoption trend from historical compliance movement over time", async () => {
+    const dir = makeTmp("spec-check-rollup-adoption-");
+    const dbPath = join(dir, "db");
+    writeFileSync(join(dir, "spec-check.config.json"), JSON.stringify({ metrics: { db_path: dbPath } }), "utf-8");
+
+    const projectA = join(dir, "proj-a");
+    const projectB = join(dir, "proj-b");
+
+    for (const [projectPath, repo] of [[projectA, "proj-a"], [projectB, "proj-b"]] as const) {
+      mkdirSync(projectPath, { recursive: true });
+      writeFileSync(join(projectPath, "intent.md"), "# Intent\n", "utf-8");
+      persistRecord(projectPath, dbPath, "gate-G1", "2025-11-01T10:00:00.000Z", {
+        schema_version: 2,
+        check_type: "gate",
+        project_path: projectPath,
+        timestamp: "2025-11-01T10:00:00.000Z",
+        gate: "G1",
+        status: "FAILING",
+        gate_status: "FAILING",
+        org: "acme",
+        repo,
+        service: "root",
+        criteria: [],
+        results: [],
+        llm_model: "claude-sonnet-4-5",
+        llm_id: "claude-sonnet-4-5",
+      });
+      persistRecord(projectPath, dbPath, "gate-G1", "2025-11-02T10:00:00.000Z", {
+        schema_version: 2,
+        check_type: "gate",
+        project_path: projectPath,
+        timestamp: "2025-11-02T10:00:00.000Z",
+        gate: "G1",
+        status: "PASS",
+        gate_status: "PASS",
+        org: "acme",
+        repo,
+        service: "root",
+        criteria: [],
+        results: [],
+        llm_model: "claude-sonnet-4-5",
+        llm_id: "claude-sonnet-4-5",
+      });
+    }
+
+    const { config } = loadConfig(dir);
+    const result = await getRollupMetrics(config);
+
+    expect(result.adoption_trend).toBe("improving");
   });
 });
 

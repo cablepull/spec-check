@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir, tmpdir } from "os";
 import { execFileSync, execSync } from "child_process";
+import { randomUUID } from "crypto";
 import type { ActorIdentity, LLMIdentity, ServiceInfo } from "./types.js";
 
 // ─── Path resolution ──────────────────────────────────────────────────────────
@@ -95,8 +96,9 @@ export function buildFilePath(
     timestamp.getUTCMinutes().toString().padStart(2, "0") +
     timestamp.getUTCSeconds().toString().padStart(2, "0") +
     timestamp.getUTCMilliseconds().toString().padStart(3, "0");
+  const eventId = randomUUID().replace(/-/g, "").slice(0, 12);
 
-  const filename = `${paths.commit8}_${paths.branch}_${llm.id}_${checkType}_${hhmmssmmm}.parquet`;
+  const filename = `${paths.commit8}_${paths.branch}_${llm.id}_${checkType}_${hhmmssmmm}_${eventId}.parquet`;
 
   return join(
     paths.storageRoot,

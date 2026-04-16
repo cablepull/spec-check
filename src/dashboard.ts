@@ -1,12 +1,15 @@
 import { createServer } from "http";
 import { resolve } from "path";
 import { existsSync } from "fs";
+import { pathToFileURL } from "url";
 import { loadConfig } from "./config.js";
 import { detectServices } from "./monorepo.js";
 import { getProjectMetrics, getRollupMetrics, type ProjectMetrics, type RollupMetrics } from "./metrics.js";
 import { getAssumptionMetrics, type AssumptionMetricsResult } from "./assumptions.js";
 import { checkDependencies } from "./dependencies.js";
 import { findLegacyJsonlFiles, migrateLegacyJsonlRecords, type LegacyMigrationReport } from "./storage.js";
+import { TOOL_DEFINITIONS, executeToolRequest } from "./index.js";
+import { getRegisteredProject, listRegisteredProjects, registerProject } from "./project_registry.js";
 
 type DependencySummary = ReturnType<typeof checkDependencies>;
 
@@ -651,78 +654,118 @@ function renderTrendsSection(metrics: ProjectMetrics): string {
   `;
 }
 
+function renderProjectRollupRows(rollup: RollupMetrics): string {
+  if (rollup.projects.length === 0) return `<tr><td colspan="6">No rollup data available.</td></tr>`;
+  return rollup.projects.slice(0, 10).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.project)}</td>
+      <td>${pct(item.compliance_score)}</td>
+      <td>${svgSparkline(
+        item.compliance_score !== null ? [item.compliance_score] : [],
+        { width: 80, height: 20, color: (item.compliance_score ?? 0) >= 80 ? "#2a7f62" : "#b42318" }
+      )}</td>
+      <td title="avg ${num(item.avg_cc)}">${num(item.max_cc, 0)}</td>
+      <td>${pct(item.latest_mutation_score)}</td>
+      <td>${item.unresolved_rca_count > 0 ? `<span class="badge fail">${item.unresolved_rca_count}</span>` : "·"}</td>
+    </tr>
+  `).join("");
+}
+
+function renderModelRollupRows(rollup: RollupMetrics): string {
+  if (rollup.model_gate_rankings.length === 0) return `<tr><td colspan="7">Not enough model-tagged runs yet.</td></tr>`;
+  return rollup.model_gate_rankings.slice(0, 6).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.model)}</td>
+      <td>${pct(item.overall_pass_rate)}</td>
+      <td>${pct(item.gates.G1)}</td>
+      <td>${pct(item.gates.G2)}</td>
+      <td>${pct(item.gates.G3)}</td>
+      <td>${pct(item.gates.G4)}</td>
+      <td>${pct(item.gates.G5)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderMetricsDueBadge(value: boolean | null | undefined): string {
+  if (value === true) return `<span class="badge warn">due</span>`;
+  if (value === false) return `<span class="badge pass">clear</span>`;
+  return `<span class="badge neutral">n/a</span>`;
+}
+
+function renderAgentRollupRows(rollup: RollupMetrics): string {
+  if (rollup.agent_gate_rankings.length === 0) return `<tr><td colspan="6">No agent-attributed runs yet.</td></tr>`;
+  return rollup.agent_gate_rankings.slice(0, 8).map((item) => `
+    <tr>
+      <td><code>${escapeHtml(trunc(item.agent_id, 20))}</code></td>
+      <td>${escapeHtml(item.agent_kind)}</td>
+      <td>${pct(item.overall_pass_rate)}</td>
+      <td>${item.runs}</td>
+      <td>${item.completed_sessions}</td>
+      <td>${renderMetricsDueBadge(item.metrics_due)}</td>
+    </tr>
+  `).join("");
+}
+
+function renderAgentKindRollupRows(rollup: RollupMetrics): string {
+  if (rollup.agent_kind_rankings.length === 0) return `<tr><td colspan="4">No agent-kind data yet.</td></tr>`;
+  return rollup.agent_kind_rankings.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.agent_kind)}</td>
+      <td>${pct(item.overall_pass_rate)}</td>
+      <td>${item.runs}</td>
+      <td>${item.agents}</td>
+    </tr>
+  `).join("");
+}
+
+function renderCommonViolations(rollup: RollupMetrics): string {
+  if (rollup.common_violations.length === 0) return `<p class="muted">No violations recorded.</p>`;
+  return svgHBarChart(
+    rollup.common_violations.slice(0, 8).map((v) => ({ label: v.id, value: v.count, color: "#9a6700" })),
+    { width: 320, defaultColor: "#9a6700" }
+  );
+}
+
+function renderInvalidatedAssumptionCategories(rollup: RollupMetrics): string {
+  if (rollup.invalidated_assumption_categories.length === 0) {
+    return "<p class=\"muted\">No invalidated assumption categories yet.</p>";
+  }
+  return svgHBarChart(
+    rollup.invalidated_assumption_categories.map((c) => ({ label: c.category, value: c.count })),
+    { width: 320, defaultColor: "#005f73" }
+  );
+}
+
+function renderUnresolvedRcaSection(rollup: RollupMetrics): string {
+  const unresolvedRcas = (rollup.unresolved_rcas as Array<{ project: string; unresolved: number }> | undefined) ?? [];
+  if (unresolvedRcas.length === 0) return "";
+  return `
+      <div style="margin-top:1rem">
+        <article class="subpanel">
+          <h3>Unresolved RCAs</h3>
+          <table>
+            <thead><tr><th>Project</th><th>Unresolved</th></tr></thead>
+            <tbody>${unresolvedRcas.map((r) => `<tr><td>${escapeHtml(r.project)}</td><td><span class="badge ${r.unresolved > 0 ? "fail" : "pass"}">${r.unresolved}</span></td></tr>`).join("")}</tbody>
+          </table>
+        </article>
+      </div>`;
+}
+
+function renderAdoptionTrendBadge(adoptionTrend: string | null | undefined): string {
+  if (adoptionTrend === "improving") return `<span class="badge pass">${adoptionTrend}</span>`;
+  if (adoptionTrend === "declining") return `<span class="badge fail">${adoptionTrend}</span>`;
+  return `<span class="badge neutral">${adoptionTrend?.replace("_", " ") ?? "unknown"}</span>`;
+}
+
 function renderRollupSection(rollup: RollupMetrics): string {
-  const maxCompliance = rollup.projects.length > 0
-    ? Math.max(...rollup.projects.map((p) => p.compliance_score ?? 0), 1)
-    : 100;
-
-  const projects = rollup.projects.length > 0
-    ? rollup.projects.slice(0, 10).map((item) => `
-      <tr>
-        <td>${escapeHtml(item.project)}</td>
-        <td>${pct(item.compliance_score)}</td>
-        <td>${svgSparkline(
-          item.compliance_score !== null ? [item.compliance_score] : [],
-          { width: 80, height: 20, color: (item.compliance_score ?? 0) >= 80 ? "#2a7f62" : "#b42318" }
-        )}</td>
-        <td title="avg ${num(item.avg_cc)}">${num(item.max_cc, 0)}</td>
-        <td>${pct(item.latest_mutation_score)}</td>
-        <td>${item.unresolved_rca_count > 0 ? `<span class="badge fail">${item.unresolved_rca_count}</span>` : "·"}</td>
-      </tr>
-    `).join("")
-    : `<tr><td colspan="6">No rollup data available.</td></tr>`;
-
-  const models = rollup.model_gate_rankings.length > 0
-    ? rollup.model_gate_rankings.slice(0, 6).map((item) => `
-      <tr>
-        <td>${escapeHtml(item.model)}</td>
-        <td>${pct(item.overall_pass_rate)}</td>
-        <td>${pct(item.gates.G1)}</td>
-        <td>${pct(item.gates.G2)}</td>
-        <td>${pct(item.gates.G3)}</td>
-        <td>${pct(item.gates.G4)}</td>
-        <td>${pct(item.gates.G5)}</td>
-      </tr>
-    `).join("")
-    : `<tr><td colspan="7">Not enough model-tagged runs yet.</td></tr>`;
-
-  const agents = rollup.agent_gate_rankings.length > 0
-    ? rollup.agent_gate_rankings.slice(0, 8).map((item) => `
-      <tr>
-        <td><code>${escapeHtml(trunc(item.agent_id, 20))}</code></td>
-        <td>${escapeHtml(item.agent_kind)}</td>
-        <td>${pct(item.overall_pass_rate)}</td>
-        <td>${item.runs}</td>
-        <td>${item.completed_sessions}</td>
-        <td>${item.metrics_due === true ? `<span class="badge warn">due</span>` : item.metrics_due === false ? `<span class="badge pass">clear</span>` : `<span class="badge neutral">n/a</span>`}</td>
-      </tr>
-    `).join("")
-    : `<tr><td colspan="6">No agent-attributed runs yet.</td></tr>`;
-
-  const agentKinds = rollup.agent_kind_rankings.length > 0
-    ? rollup.agent_kind_rankings.map((item) => `
-      <tr>
-        <td>${escapeHtml(item.agent_kind)}</td>
-        <td>${pct(item.overall_pass_rate)}</td>
-        <td>${item.runs}</td>
-        <td>${item.agents}</td>
-      </tr>
-    `).join("")
-    : `<tr><td colspan="4">No agent-kind data yet.</td></tr>`;
-
-  const commonViolations = rollup.common_violations.length > 0
-    ? svgHBarChart(
-        rollup.common_violations.slice(0, 8).map((v) => ({ label: v.id, value: v.count, color: "#9a6700" })),
-        { width: 320, defaultColor: "#9a6700" }
-      )
-    : `<p class="muted">No violations recorded.</p>`;
-
-  // Adoption trend sparkline — derive from model rankings change
-  const adoptionBadge = rollup.adoption_trend === "improving"
-    ? `<span class="badge pass">${rollup.adoption_trend}</span>`
-    : rollup.adoption_trend === "declining"
-    ? `<span class="badge fail">${rollup.adoption_trend}</span>`
-    : `<span class="badge neutral">${rollup.adoption_trend?.replace("_", " ") ?? "unknown"}</span>`;
+  const projects = renderProjectRollupRows(rollup);
+  const models = renderModelRollupRows(rollup);
+  const agents = renderAgentRollupRows(rollup);
+  const agentKinds = renderAgentKindRollupRows(rollup);
+  const commonViolations = renderCommonViolations(rollup);
+  const invalidatedAssumptions = renderInvalidatedAssumptionCategories(rollup);
+  const unresolvedRcaSection = renderUnresolvedRcaSection(rollup);
+  const adoptionBadge = renderAdoptionTrendBadge(rollup.adoption_trend);
 
   return `
     <section class="panel">
@@ -772,24 +815,10 @@ function renderRollupSection(rollup: RollupMetrics): string {
         </article>
         <article class="subpanel">
           <h3>Invalidated Assumption Categories</h3>
-          ${rollup.invalidated_assumption_categories.length > 0
-            ? svgHBarChart(
-                rollup.invalidated_assumption_categories.map((c) => ({ label: c.category, value: c.count })),
-                { width: 320, defaultColor: "#005f73" }
-              )
-            : "<p class=\"muted\">No invalidated assumption categories yet.</p>"}
+          ${invalidatedAssumptions}
         </article>
       </div>
-      ${rollup.unresolved_rcas && (rollup.unresolved_rcas as Array<{ project: string; unresolved: number }>).length > 0 ? `
-      <div style="margin-top:1rem">
-        <article class="subpanel">
-          <h3>Unresolved RCAs</h3>
-          <table>
-            <thead><tr><th>Project</th><th>Unresolved</th></tr></thead>
-            <tbody>${(rollup.unresolved_rcas as Array<{ project: string; unresolved: number }>).map((r) => `<tr><td>${escapeHtml(r.project)}</td><td><span class="badge ${r.unresolved > 0 ? "fail" : "pass"}">${r.unresolved}</span></td></tr>`).join("")}</tbody>
-          </table>
-        </article>
-      </div>` : ""}
+      ${unresolvedRcaSection}
     </section>
   `;
 }
@@ -1088,13 +1117,214 @@ function sendHtml(res: import("http").ServerResponse, value: string, status = 20
   res.end(value);
 }
 
+async function readJsonBody(req: import("http").IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  if (chunks.length === 0) return {};
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return {};
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected JSON object body.");
+  return parsed as Record<string, unknown>;
+}
+
+function getToolDefinition(name: string) {
+  return TOOL_DEFINITIONS.find((tool) => tool.name === name) ?? null;
+}
+
+function mergeActorIntoArguments(
+  args: Record<string, unknown>,
+  actor: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!actor) return args;
+  return {
+    ...args,
+    llm: args.llm ?? actor.llm ?? actor.model,
+    agent_id: args.agent_id ?? actor.agent_id,
+    agent_kind: args.agent_kind ?? actor.agent_kind,
+    parent_agent_id: args.parent_agent_id ?? actor.parent_agent_id,
+    session_id: args.session_id ?? actor.session_id,
+    run_id: args.run_id ?? actor.run_id,
+  };
+}
+
+function getToolName(body: Record<string, unknown>): string {
+  const toolName = typeof body.tool === "string" ? body.tool : typeof body.name === "string" ? body.name : null;
+  if (!toolName) throw new Error("Request body must include `tool`.");
+  return toolName;
+}
+
+function getRequestObject(
+  body: Record<string, unknown>,
+  key: "arguments" | "actor"
+): Record<string, unknown> | undefined {
+  const value = body[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return { ...(value as Record<string, unknown>) };
+}
+
+function resolveRequestProjectPath(
+  args: Record<string, unknown>,
+  body: Record<string, unknown>
+): Record<string, unknown> {
+  const projectId = typeof body.project_id === "string" ? body.project_id : null;
+  if (!projectId || args.path) return args;
+  const project = getRegisteredProject(projectId);
+  if (!project) throw new Error(`Unknown project_id: ${projectId}`);
+  return { ...args, path: project.path };
+}
+
+function applyDefaultToolPath(
+  args: Record<string, unknown>,
+  toolDefinition: { inputSchema: { required?: unknown } },
+  defaultPath: string
+): Record<string, unknown> {
+  const required = Array.isArray(toolDefinition.inputSchema.required) ? toolDefinition.inputSchema.required : [];
+  if (args.path || !required.includes("path")) return args;
+  const registeredProjects = listRegisteredProjects();
+  if (registeredProjects.length === 1) return { ...args, path: registeredProjects[0]!.path };
+  if (registeredProjects.length > 1) {
+    throw new Error("This tool requires `path` or `project_id` when multiple projects are registered.");
+  }
+  return { ...args, path: defaultPath };
+}
+
+async function executeHttpToolCall(body: Record<string, unknown>, defaultPath: string): Promise<unknown> {
+  const toolName = getToolName(body);
+  const toolDefinition = getToolDefinition(toolName);
+  if (!toolDefinition) throw new Error(`Unknown tool: ${toolName}`);
+
+  const rawArgs = getRequestObject(body, "arguments") ?? {};
+  const actor = getRequestObject(body, "actor");
+  const mergedArgs = mergeActorIntoArguments(rawArgs, actor);
+  const scopedArgs = resolveRequestProjectPath(mergedArgs, body);
+  const args = applyDefaultToolPath(scopedArgs, toolDefinition, defaultPath);
+  const response = await executeToolRequest(toolName, args);
+  return JSON.parse(response.content[0]?.text ?? "null");
+}
+
+async function registerHttpProject(req: import("http").IncomingMessage): Promise<{ project: ReturnType<typeof registerProject> }> {
+  const body = await readJsonBody(req);
+  const projectPath = typeof body.path === "string" ? body.path : null;
+  if (!projectPath) throw new Error("MISSING_PATH");
+  const projectName = typeof body.name === "string" ? body.name : undefined;
+  return { project: registerProject(projectPath, projectName) };
+}
+
+function sendToolMetadata(res: import("http").ServerResponse): void {
+  sendJson(res, {
+    tools: TOOL_DEFINITIONS.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    })),
+  });
+}
+
+async function handleProjectRegistration(
+  req: import("http").IncomingMessage,
+  res: import("http").ServerResponse
+): Promise<boolean> {
+  try {
+    sendJson(res, await registerHttpProject(req), 201);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const detail = message === "MISSING_PATH" ? "Request body must include `path`." : message;
+    sendJson(res, { error: message, detail }, message === "MISSING_PATH" ? 400 : 500);
+  }
+  return true;
+}
+
+async function handleHttpToolCall(
+  req: import("http").IncomingMessage,
+  res: import("http").ServerResponse,
+  targetPath: string
+): Promise<boolean> {
+  const body = await readJsonBody(req);
+  const result = await executeHttpToolCall(body, targetPath);
+  sendJson(res, result);
+  return true;
+}
+
+export function resolveDashboardOptions(argv: string[], env: NodeJS.ProcessEnv = process.env): {
+  defaultPath: string;
+  port: number;
+  host: string;
+} {
+  const defaultPath = argv.find((arg) => !arg.startsWith("--")) ?? process.cwd();
+  const port = Number(argv.find((arg) => arg.startsWith("--port="))?.slice("--port=".length) ?? env.PORT ?? 4319);
+  const host = env.HOST ?? "127.0.0.1";
+  return { defaultPath, port, host };
+}
+
+type DashboardApiContext = {
+  defaultPath: string;
+  host: string;
+  port: number;
+};
+
+type DashboardServerContext = DashboardApiContext;
+
+async function handleDashboardApiRequest(
+  req: import("http").IncomingMessage,
+  res: import("http").ServerResponse,
+  url: URL,
+  context: DashboardApiContext
+): Promise<boolean> {
+  const targetPath = url.searchParams.get("path") || context.defaultPath;
+  if (url.pathname === "/health") {
+    sendJson(res, { ok: true, path: resolve(targetPath), port: context.port, host: context.host });
+    return true;
+  }
+
+  switch (`${req.method}:${url.pathname}`) {
+    case "GET:/api/tools":
+      sendToolMetadata(res);
+      return true;
+    case "GET:/api/projects":
+      sendJson(res, { projects: listRegisteredProjects() });
+      return true;
+    case "POST:/api/projects":
+      return handleProjectRegistration(req, res);
+    case "POST:/api/tools/call":
+      return handleHttpToolCall(req, res, targetPath);
+    default:
+      return false;
+  }
+}
+
+async function handleDashboardPageRequest(
+  req: import("http").IncomingMessage,
+  res: import("http").ServerResponse,
+  context: DashboardServerContext
+): Promise<void> {
+  try {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${context.host}:${context.port}`}`);
+    const handled = await handleDashboardApiRequest(req, res, url, context);
+    if (handled) return;
+
+    const targetPath = url.searchParams.get("path") || context.defaultPath;
+    const since = url.searchParams.get("since") || undefined;
+    const data = await loadDashboardData(targetPath, since);
+    if (url.pathname === "/api/project") return sendJson(res, data.projectMetrics);
+    if (url.pathname === "/api/rollup") return sendJson(res, data.rollupMetrics);
+    if (url.pathname === "/api/assumptions") return sendJson(res, data.assumptionMetrics);
+    if (url.pathname === "/api/dependencies") return sendJson(res, data.dependencies);
+    if (url.pathname !== "/") return sendJson(res, { error: "Not found" }, 404);
+    return sendHtml(res, renderHtml(data));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return sendJson(res, { error: "DASHBOARD_ERROR", detail: message }, 500);
+  }
+}
+
 // ─── HTTP server ──────────────────────────────────────────────────────────────
 
-async function main() {
-  const args = process.argv.slice(2);
-  const defaultPath = args.find((arg) => !arg.startsWith("--")) ?? process.cwd();
-  const port = Number(args.find((arg) => arg.startsWith("--port="))?.slice("--port=".length) ?? process.env.PORT ?? 4319);
-  const host = process.env.HOST ?? "127.0.0.1";
+export async function startDashboardServer(argv: string[] = process.argv.slice(2)) {
+  const args = argv;
+  const { defaultPath, port, host } = resolveDashboardOptions(args);
   const { config } = loadConfig(defaultPath);
   const startupMigration = migrateLegacyJsonlRecords(config.value.metrics.db_path, defaultPath);
   if (startupMigration.migrated > 0 || startupMigration.removed > 0 || startupMigration.failed > 0 || findLegacyJsonlFiles(config.value.metrics.db_path, defaultPath).length > 0) {
@@ -1103,29 +1333,8 @@ async function main() {
     );
   }
 
-  const server = createServer(async (req, res) => {
-    try {
-      const url = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
-      const targetPath = url.searchParams.get("path") || defaultPath;
-      const since = url.searchParams.get("since") || undefined;
-
-      if (url.pathname === "/health") {
-        return sendJson(res, { ok: true, path: resolve(targetPath), port, host });
-      }
-
-      const data = await loadDashboardData(targetPath, since);
-
-      if (url.pathname === "/api/project") return sendJson(res, data.projectMetrics);
-      if (url.pathname === "/api/rollup") return sendJson(res, data.rollupMetrics);
-      if (url.pathname === "/api/assumptions") return sendJson(res, data.assumptionMetrics);
-      if (url.pathname === "/api/dependencies") return sendJson(res, data.dependencies);
-      if (url.pathname !== "/") return sendJson(res, { error: "Not found" }, 404);
-
-      return sendHtml(res, renderHtml(data));
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return sendJson(res, { error: "DASHBOARD_ERROR", detail: message }, 500);
-    }
+  const server = createServer((req, res) => {
+    void handleDashboardPageRequest(req, res, { defaultPath, host, port });
   });
 
   server.listen(port, host, () => {
@@ -1133,7 +1342,10 @@ async function main() {
   });
 }
 
-main().catch((error) => {
-  process.stderr.write(`[spec-check] dashboard startup failed: ${error instanceof Error ? error.message : String(error)}\n`);
-  process.exit(1);
-});
+const entryArg = process.argv[1];
+if (!process.env.VITEST && entryArg && import.meta.url === pathToFileURL(entryArg).href) {
+  startDashboardServer().catch((error) => {
+    process.stderr.write(`[spec-check] dashboard startup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
+}

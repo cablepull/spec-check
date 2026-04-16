@@ -308,35 +308,21 @@ function inspectDependency(
   projectRoot?: string
 ): DependencyStatus {
   const token = firstToken(dep.check);
-  const localNodeBinary = projectRoot ? join(projectRoot, "node_modules", ".bin", dep.name) : "";
-  const checkCommand =
-    dep.name === "stryker" && localNodeBinary && existsSync(localNodeBinary)
-      ? `${localNodeBinary} --version`
-      : dep.check;
-  const shouldSkipDirectCheck =
-    (dep.name === "stryker" && !existsSync(localNodeBinary)) ||
-    (token !== "npx" && !probeBinary(token));
+  const checkCommand = resolveDependencyCheckCommand(dep, projectRoot);
+  const shouldSkipDirectCheck = shouldSkipDependencyCheck(dep, token, projectRoot);
 
   const check = shouldSkipDirectCheck
     ? { status: 1, stdout: "", stderr: `${token} not found` }
     : runShell(checkCommand, projectRoot, 800);
   const output = `${check.stdout ?? ""}\n${check.stderr ?? ""}`.trim();
   const installed = check.status === 0;
+  const runtimeAvailable = runtimes[dep.requiresRuntime];
 
   const installCommands = Object.fromEntries(
     Object.entries(dep.install).filter(([manager]) => availableManagers[manager as PackageManager])
   ) as Partial<Record<PackageManager, string>>;
 
-  let missingReason: string | undefined;
-  if (!installed) {
-    if (!runtimes[dep.requiresRuntime]) {
-      missingReason = `${dep.requiresRuntime} runtime is not available`;
-    } else if (Object.keys(installCommands).length === 0) {
-      missingReason = "no supported package manager detected for this dependency";
-    } else {
-      missingReason = "binary not found";
-    }
-  }
+  const missingReason = resolveMissingDependencyReason(dep, installed, runtimeAvailable, installCommands);
 
   return {
     name: dep.name,
@@ -345,11 +331,37 @@ function inspectDependency(
     covers: dep.covers,
     languages: dep.languages,
     requires_runtime: dep.requiresRuntime,
-    runtime_available: runtimes[dep.requiresRuntime],
+    runtime_available: runtimeAvailable,
     check_command: checkCommand,
     install_commands: installCommands,
     missing_reason: missingReason,
   };
+}
+
+function resolveDependencyCheckCommand(dep: DependencySpec, projectRoot?: string): string {
+  const localNodeBinary = projectRoot ? join(projectRoot, "node_modules", ".bin", dep.name) : "";
+  const hasLocalNodeBinary = Boolean(localNodeBinary) && existsSync(localNodeBinary);
+  return dep.name === "stryker" && hasLocalNodeBinary ? `${localNodeBinary} --version` : dep.check;
+}
+
+function shouldSkipDependencyCheck(dep: DependencySpec, token: string, projectRoot?: string): boolean {
+  const localNodeBinary = projectRoot ? join(projectRoot, "node_modules", ".bin", dep.name) : "";
+  const hasLocalNodeBinary = Boolean(localNodeBinary) && existsSync(localNodeBinary);
+  if (dep.name === "stryker" && !hasLocalNodeBinary) return true;
+  if (token === "npx") return false;
+  return !probeBinary(token);
+}
+
+function resolveMissingDependencyReason(
+  dep: DependencySpec,
+  installed: boolean,
+  runtimeAvailable: boolean,
+  installCommands: Partial<Record<PackageManager, string>>
+): string | undefined {
+  if (installed) return undefined;
+  if (!runtimeAvailable) return `${dep.requiresRuntime} runtime is not available`;
+  if (Object.keys(installCommands).length === 0) return "no supported package manager detected for this dependency";
+  return "binary not found";
 }
 
 export function checkDependencies(projectRoot?: string): CheckDependenciesResult {

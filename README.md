@@ -1,6 +1,6 @@
 # spec-check
 
-A local MCP server that enforces spec-driven development through static analysis and rule-based checks. An LLM calls it, receives a deterministic verdict with specific violations, and must satisfy those violations before the workflow advances.
+A local spec-driven development runtime that exposes the same checks over MCP stdio and a local HTTP daemon. An LLM or script calls it, receives a deterministic verdict with specific violations, and must satisfy those violations before the workflow advances.
 
 Runs entirely offline. No code, intent, or metrics leave the machine.
 
@@ -18,7 +18,7 @@ Projects are expected to maintain five spec artifacts:
 | `tasks.md` | Breakdown of work items with status tracking |
 | `tests/` or `test/` | Executable test coverage |
 
-The server exposes 26 MCP tools. The primary workflow is:
+The runtime exposes the same tool catalog through MCP and the local JSON API. The primary workflow is:
 
 ```
 run_all          → runs all five gates, stops at first BLOCK
@@ -30,7 +30,7 @@ metrics          → query stored compliance history for a project
 get_rollup       → cross-project rankings and model comparisons
 ```
 
-Each tool returns structured JSON with `status`, `criteria` (array of check results), `evidence`, and `fix` instructions.
+Each tool returns structured JSON with `data`, `meta`, and `workflow`, with per-check `status`, `criteria`, `evidence`, and `fix` instructions inside the tool payload.
 
 ---
 
@@ -41,6 +41,22 @@ Each tool returns structured JSON with `status`, `criteria` (array of check resu
 ```bash
 npm install -g spec-check   # or: npx spec-check
 ```
+
+## Runtime modes
+
+**MCP stdio mode** starts by default:
+
+```bash
+npx spec-check
+```
+
+**Local daemon mode** starts the dashboard and HTTP API:
+
+```bash
+npx spec-check server
+```
+
+The daemon binds to `127.0.0.1:4319` by default. Override the port with `--port=4321` or `PORT=4321`.
 
 **Optional dependencies** (detected automatically, install as needed):
 
@@ -76,6 +92,47 @@ Check what's available: call the `check_dependencies` tool.
 ```
 
 **Cursor / other MCP clients:** same `command` + `args`, placed in the client's MCP server config.
+
+## Local HTTP API
+
+When the daemon is running, the local API exposes:
+
+- `GET /health`
+- `GET /api/tools`
+- `GET /api/projects`
+- `POST /api/projects`
+- `POST /api/tools/call`
+- `GET /api/project`
+- `GET /api/rollup`
+- `GET /api/assumptions`
+- `GET /api/dependencies`
+
+Example:
+
+```bash
+curl -s http://127.0.0.1:4319/api/tools
+```
+
+Register a project:
+
+```bash
+curl -s -X POST http://127.0.0.1:4319/api/projects \
+  -H 'content-type: application/json' \
+  --data '{"path":".","name":"spec-check"}'
+```
+
+Call a tool over HTTP:
+
+```bash
+curl -s -X POST http://127.0.0.1:4319/api/tools/call \
+  -H 'content-type: application/json' \
+  --data '{
+    "tool":"run_all",
+    "project_id":"spec-check",
+    "arguments":{"format":"json"},
+    "actor":{"provider":"openai","model":"gpt-5.4","agent_id":"agent-1","session_id":"session-1"}
+  }'
+```
 
 ---
 
@@ -145,7 +202,11 @@ Every tool call writes a Parquet record to `~/.spec-check/data` (or the configur
 
 **Cross-project rollup** (`get_rollup` tool): compliance rankings, model and agent comparisons, top projects by max CC, common violations.
 
-**HTML dashboard** (if using the dashboard script): renders charts for gate pass rate history, CC trend (max CC vs CC-1 threshold), mutation score, and the heatmap showing pass/fail across all five gates per run iteration.
+**HTML dashboard** (served by `spec-check server`): renders charts for gate pass rate history, CC trend (max CC vs CC-1 threshold), mutation score, and the heatmap showing pass/fail across all five gates per run iteration.
+
+## Multi-project usage
+
+The daemon can register multiple local repositories and route tool calls by stable project identifier instead of raw path. When multiple projects are registered, callers should send `project_id` or `path` explicitly so the request stays unambiguous.
 
 ---
 

@@ -56,7 +56,7 @@ describe("buildFilePath", () => {
     const fp = buildFilePath(paths, fakeLlm, "gate-G1", ts);
 
     expect(fp).toContain("/tmp/spec-check-data/acme/backend/api/2025/06/15/");
-    expect(fp).toMatch(/abc12345_main_claude-sonnet-4-5_gate-G1_\d{9}\.parquet$/);
+    expect(fp).toMatch(/abc12345_main_claude-sonnet-4-5_gate-G1_\d{9}_[a-z0-9]+\.parquet$/);
   });
 
   it("R-16 zero-pads month, day, and time components", () => {
@@ -101,6 +101,25 @@ describe("buildFilePath", () => {
     };
     const fp = buildFilePath(paths, fakeLlm, "mutation", new Date());
     expect(fp).toContain("_mutation_");
+  });
+
+  it("R-16 produces unique parquet paths for repeated writes in the same millisecond", () => {
+    const paths = {
+      storageRoot: "/tmp/x",
+      org: "o",
+      repo: "r",
+      service: "s",
+      commit8: "deadbeef",
+      branch: "main",
+    };
+    const ts = new Date("2025-03-01T00:00:00.000Z");
+
+    const first = buildFilePath(paths, fakeLlm, "complexity", ts);
+    const second = buildFilePath(paths, fakeLlm, "complexity", ts);
+
+    expect(first).not.toBe(second);
+    expect(first).toMatch(/deadbeef_main_claude-sonnet-4-5_complexity_000000000_[a-z0-9]+\.parquet$/);
+    expect(second).toMatch(/deadbeef_main_claude-sonnet-4-5_complexity_000000000_[a-z0-9]+\.parquet$/);
   });
 });
 

@@ -79,6 +79,39 @@ function extractSourceSummary(content: string): string {
   return paragraphLines.join(" ").slice(0, 300) || "a project";
 }
 
+interface SourceContext {
+  sourcePath: string | null;
+  sourceContent: string;
+  sourceTitle: string | null;
+  sourceSummary: string;
+  projectTitle: string;
+}
+
+function loadSourceContext(absRoot: string, sourceHint?: string): SourceContext {
+  const sourcePath = detectSource(absRoot, sourceHint);
+  let sourceContent = "";
+  let sourceTitle: string | null = null;
+
+  if (sourcePath) {
+    try {
+      sourceContent = readFileSync(sourcePath, "utf8");
+      sourceTitle = extractSourceTitle(sourceContent);
+    } catch {
+      sourceContent = "";
+      sourceTitle = null;
+    }
+  }
+
+  const sourceSummary = sourceContent ? extractSourceSummary(sourceContent) : "your project";
+  return {
+    sourcePath,
+    sourceContent,
+    sourceTitle,
+    sourceSummary,
+    projectTitle: sourceTitle ?? "Your Project",
+  };
+}
+
 // ─── Template builders ────────────────────────────────────────────────────────
 
 function buildStoryTemplate(projectTitle: string, sourceSummary: string): string {
@@ -373,66 +406,56 @@ function writeEntryFile(filePath: string, content: string, displayFilename: stri
   }
 }
 
-export function scaffoldSpec(
-  projectRoot: string,
-  sourceHint?: string,
-  write = false
-): ScaffoldResult {
-  const absRoot = resolve(projectRoot);
-  const sourcePath = detectSource(absRoot, sourceHint);
+interface ScaffoldFileContext {
+  entry: string;
+  absRoot: string;
+  projectTitle: string;
+  sourceSummary: string;
+  skippedExisting: string[];
+  notes: string[];
+  write: boolean;
+}
 
-  let sourceContent = "";
-  let sourceTitle: string | null = null;
+function buildScaffoldFile(context: ScaffoldFileContext): ScaffoldedFile {
+  const { entry, absRoot, projectTitle, sourceSummary, skippedExisting, notes, write } = context;
+  const metaKey = entry.includes(".") ? entry : `${entry}/`;
+  const meta = FILE_META[metaKey] ?? { guidance: [], violations: [] };
+  const { starterFilename, content } = buildEntryContent(entry, absRoot, projectTitle, sourceSummary);
+  const { filePath, displayFilename, exists } = resolveEntryPaths(entry, absRoot, starterFilename);
 
-  if (sourcePath) {
-    try {
-      sourceContent = readFileSync(sourcePath, "utf8");
-      sourceTitle = extractSourceTitle(sourceContent);
-    } catch { /* ignore read errors */ }
+  let written = false;
+  if (exists) {
+    skippedExisting.push(displayFilename);
+  } else if (write) {
+    written = writeEntryFile(filePath, content, displayFilename, notes);
   }
 
-  const sourceSummary = sourceContent ? extractSourceSummary(sourceContent) : "your project";
-  const projectTitle = sourceTitle ?? "Your Project";
+  return {
+    filename: displayFilename,
+    path: filePath,
+    exists,
+    written,
+    content: exists ? "" : content,
+    guidance: meta.guidance,
+    common_violations: meta.violations,
+  };
+}
 
-  const skippedExisting: string[] = [];
-  const files: ScaffoldedFile[] = [];
+function buildScaffoldNotes(sourcePath: string | null, skippedExisting: string[]): string[] {
   const notes: string[] = [];
-
-  for (const entry of SPEC_FILES) {
-    const metaKey = entry.includes(".") ? entry : `${entry}/`;
-    const meta = FILE_META[metaKey] ?? { guidance: [], violations: [] };
-    const { starterFilename, content } = buildEntryContent(entry, absRoot, projectTitle, sourceSummary);
-    const { filePath, displayFilename, exists } = resolveEntryPaths(entry, absRoot, starterFilename);
-
-    let written = false;
-    if (exists) {
-      skippedExisting.push(displayFilename);
-    } else if (write) {
-      written = writeEntryFile(filePath, content, displayFilename, notes);
-    }
-
-    files.push({
-      filename: displayFilename,
-      path: filePath,
-      exists,
-      written,
-      content: exists ? "" : content, // Don't return existing file content — the LLM should read it separately
-      guidance: meta.guidance,
-      common_violations: meta.violations,
-    });
-  }
-
   if (sourcePath) {
     notes.push(`Source document used for context: ${sourcePath}`);
   } else {
     notes.push("No PRD or README found — templates use generic placeholders. Provide a 'source' path for better context.");
   }
-
   if (skippedExisting.length > 0) {
     notes.push(`Existing files were not modified: ${skippedExisting.join(", ")}. Review them with gate_check to see what needs fixing.`);
   }
+  return notes;
+}
 
-  const workflow = [
+function buildSuggestedWorkflow(): string[] {
+  return [
     "1. Fill in stories/001-initial-story.md — open Intent with 'The problem is that...' (causal language required)",
     "2. Fill in prd/001-initial-feature.md — add at least one negative Example per Feature/Rule",
     "3. Run compile_requirements with write:true to generate requirements.md from prd/",
@@ -443,54 +466,88 @@ export function scaffoldSpec(
     "8. Gate G5 will BLOCK until test files exist — expected for pre-implementation projects",
     "9. Add tests/, then run_all again to confirm G5 passes and all gates are green",
   ];
+}
+
+export function scaffoldSpec(
+  projectRoot: string,
+  sourceHint?: string,
+  write = false
+): ScaffoldResult {
+  const absRoot = resolve(projectRoot);
+  const context = loadSourceContext(absRoot, sourceHint);
+
+  const skippedExisting: string[] = [];
+  const notes: string[] = [];
+  const files = SPEC_FILES.map((entry) =>
+    buildScaffoldFile({
+      entry,
+      absRoot,
+      projectTitle: context.projectTitle,
+      sourceSummary: context.sourceSummary,
+      skippedExisting,
+      notes,
+      write,
+    })
+  );
+  notes.push(...buildScaffoldNotes(context.sourcePath, skippedExisting));
 
   return {
     project_path: absRoot,
-    source_used: sourcePath,
-    source_title: sourceTitle,
+    source_used: context.sourcePath,
+    source_title: context.sourceTitle,
     files,
     skipped_existing: skippedExisting,
-    suggested_workflow: workflow,
+    suggested_workflow: buildSuggestedWorkflow(),
     notes,
   };
 }
 
-export function scaffoldToText(result: ScaffoldResult): string {
-  const lines: string[] = [];
+function scaffoldFileStatus(file: ScaffoldedFile): string {
+  if (file.exists) return "already exists — skipped";
+  if (file.written) return "✅ written";
+  return "template ready (call with write:true to write to disk)";
+}
 
+function appendScaffoldHeader(lines: string[], result: ScaffoldResult): void {
   lines.push("scaffold_spec result");
   lines.push("═".repeat(70));
   lines.push(`Project: ${result.project_path}`);
-  if (result.source_used) lines.push(`Source:  ${result.source_used}${result.source_title ? ` (${result.source_title})` : ""}`);
-  lines.push("");
-
-  for (const file of result.files) {
-    const status = file.exists
-      ? "already exists — skipped"
-      : file.written
-      ? "✅ written"
-      : "template ready (call with write:true to write to disk)";
-    lines.push(`${file.filename}  [${status}]`);
-    lines.push("  Guidance:");
-    for (const g of file.guidance) lines.push(`    • ${g}`);
-    lines.push("  Common violations to avoid:");
-    for (const v of file.common_violations) lines.push(`    ⚠ ${v}`);
-    lines.push("");
+  if (result.source_used) {
+    lines.push(`Source:  ${result.source_used}${result.source_title ? ` (${result.source_title})` : ""}`);
   }
+  lines.push("");
+}
 
+function appendScaffoldFile(lines: string[], file: ScaffoldedFile): void {
+  lines.push(`${file.filename}  [${scaffoldFileStatus(file)}]`);
+  lines.push("  Guidance:");
+  for (const guidance of file.guidance) lines.push(`    • ${guidance}`);
+  lines.push("  Common violations to avoid:");
+  for (const violation of file.common_violations) lines.push(`    ⚠ ${violation}`);
+  lines.push("");
+}
+
+function appendScaffoldWorkflow(lines: string[], workflow: string[]): void {
+  lines.push("Suggested workflow:");
+  for (const step of workflow) lines.push(`  ${step}`);
+  lines.push("");
+}
+
+function appendScaffoldNotes(lines: string[], notes: string[]): void {
+  if (notes.length === 0) return;
+  lines.push("Notes:");
+  for (const note of notes) lines.push(`  • ${note}`);
+}
+
+export function scaffoldToText(result: ScaffoldResult): string {
+  const lines: string[] = [];
+  appendScaffoldHeader(lines, result);
+  for (const file of result.files) appendScaffoldFile(lines, file);
   if (result.skipped_existing.length > 0) {
     lines.push(`Skipped (already exist): ${result.skipped_existing.join(", ")}`);
     lines.push("");
   }
-
-  lines.push("Suggested workflow:");
-  for (const step of result.suggested_workflow) lines.push(`  ${step}`);
-  lines.push("");
-
-  if (result.notes.length > 0) {
-    lines.push("Notes:");
-    for (const note of result.notes) lines.push(`  • ${note}`);
-  }
-
+  appendScaffoldWorkflow(lines, result.suggested_workflow);
+  appendScaffoldNotes(lines, result.notes);
   return lines.join("\n");
 }
