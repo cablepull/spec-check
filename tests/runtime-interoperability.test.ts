@@ -81,6 +81,46 @@ describe("runtime interoperability", () => {
     expect(JSON.parse(readFileSync(registryPath, "utf8")).projects[0].project_id).toBe("auth-service");
   });
 
+  it("R-66 canonical path prevents duplicate registrations for equivalent paths", () => {
+    const home = makeRoot("spec-check-home-");
+    const project = makeSpecProject("spec-check-project-");
+    process.env.HOME = home;
+
+    const first = registerProject(project, "my-service");
+    const second = registerProject(project, "my-service");
+    expect(first.project_id).toBe(second.project_id);
+    expect(listRegisteredProjects()).toHaveLength(1);
+  });
+
+  it("R-66 rejects registration of a nonexistent path", () => {
+    const home = makeRoot("spec-check-home-");
+    process.env.HOME = home;
+    expect(() => registerProject("/nonexistent/path/that/does/not/exist", "ghost")).toThrow();
+  });
+
+  it("R-61 daemon does not bind to 0.0.0.0 by default", () => {
+    const options = resolveDashboardOptions([], {});
+    expect(options.host).not.toBe("0.0.0.0");
+  });
+
+  it("R-64 returns structured error for unknown tool name", async () => {
+    const response = await executeToolRequest("no_such_tool", {});
+    const parsed = JSON.parse(response.content[0]!.text) as { data: { code: string } };
+    expect(parsed.data.code).toBe("UNKNOWN_TOOL");
+  });
+
+  it("R-67 resolves project_id to its canonical path", () => {
+    const home = makeRoot("spec-check-home-");
+    const project = makeSpecProject("spec-check-project-");
+    process.env.HOME = home;
+
+    registerProject(project, "spec-check-test");
+    const canonical = canonicalProjectPath(project);
+    const found = getRegisteredProject("spec-check-test");
+    expect(found).not.toBeNull();
+    expect(found?.path).toBe(canonical);
+  });
+
   it("R-67 rejects unknown registered projects and R-68 keeps distinct registrations isolated", () => {
     const home = makeRoot("spec-check-home-");
     const projectA = makeSpecProject("spec-check-project-a-");
