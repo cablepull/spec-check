@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, macos-13]   # arm64 (Sonoma), x86_64 (Ventura)
+        os: [macos-14, macos-15]   # arm64 Sonoma, arm64 Sequoia
 
     steps:
       - uses: actions/checkout@v4
@@ -78,6 +78,7 @@ jobs:
     name: Update formula with bottle hashes
     needs: build
     runs-on: ubuntu-latest
+    if: always() && !cancelled() && needs.build.result != 'skipped'
 
     steps:
       - uses: actions/checkout@v4
