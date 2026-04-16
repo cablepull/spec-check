@@ -346,6 +346,27 @@
 - [x] Make registry persistence atomic (Rule: projects can be registered with stable identifiers)
 - [x] Correct rollup semantics to use project rates, current RCA state, artifact-derived assumption metrics, and historical compliance buckets (Rule: cross-project metrics must be queryable by glob)
 
+## Story 035 — Init Script and Brew Tap
+
+- [ ] Define `ToolAdapter` interface with `id`, `name`, `detect()`, `files(options)`, `install()` in `src/init.ts` (Rule: R-69 init writes tool-specific integration files)
+- [ ] Implement `ClaudeAdapter`: writes `CLAUDE.md` fragment to project root (Rule: R-69 init writes tool-specific integration files)
+- [ ] Implement `ClaudeAdapter` MCP server JSON merge into `~/.config/claude/claude_desktop_config.json` (Rule: R-69 init writes tool-specific integration files)
+- [ ] Implement `CursorAdapter`: writes `.cursor/rules/spec-check.mdc` to project directory (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `GeminiAdapter`: writes `.gemini/GEMINI.md` to project directory (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `CodexAdapter`: writes `codex.md` to project root (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `OllamaAdapter`: writes `.ollama/spec-check.md` to project directory (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement adapter registry map keyed by tool id for O(1) lookup (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `runInit(options)` orchestrator: resolve adapter, check existing files, write with skip-on-exists logic (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `--force` flag support: overwrite existing files when present (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `--all` flag: call `detect()` on each adapter, configure those that return true (Rule: R-70 init supports all named tools without cross-adapter interference)
+- [ ] Implement `runInstall(toolId, options)`: call adapter `install()`, report success or failure per dependency (Rule: R-71 install flag installs additional support dependencies)
+- [ ] Reject `--install` when neither `--tool` nor `--all` is present with a structured error (Rule: R-71 install flag installs additional support dependencies)
+- [ ] Wire `init` subcommand into `src/cli.ts` with `--tool`, `--all`, `--install`, `--force`, `--path` flags (Rule: R-69 init writes tool-specific integration files)
+- [ ] Write `Formula/spec-check.rb` homebrew formula using npm install scoped to brew prefix (Rule: R-72 spec-check installable via homebrew tap)
+- [ ] Add shell shim to formula so `spec-check` resolves on the system path after install (Rule: R-73 formula registers CLI entrypoint correctly)
+- [ ] Add `caveats` block to formula referencing `spec-check init` with MCP registration instructions (Rule: R-73 formula registers CLI entrypoint correctly)
+- [ ] Write `tests/init.test.ts` covering all adapters, skip-on-exists, --force, --all, unknown tool error (Rule: R-69, R-70, R-71)
+
 ## Assumptions
 
 - The task list remains intentionally implementation-oriented and may reference concrete modules or tools because it is an execution artifact rather than a gate-validated requirements artifact.
