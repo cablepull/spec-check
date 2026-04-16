@@ -88,11 +88,11 @@ export function detectSolutionBeforeProblem(text: string): NLPResult {
 const IMPL_PATTERNS: Array<[RegExp, string]> = [
   [/\b[A-Z][a-z]+(?:[A-Z][a-z]*){2,}\b/g, "PascalCase identifier"],
   [/\b[a-z]+(?:_[a-z]+){2,}\b/g, "snake_case (3+ segments)"],
-  [/\b(React|Vue|Angular|Svelte|Next\.?js|Nuxt|Vite|Webpack|Rollup|esbuild)\b/gi, "frontend framework"],
-  [/\b(Express|Fastify|Hono|NestJS|Django|FastAPI|Flask|Spring|Rails)\b/gi, "web framework"],
-  [/\b(PostgreSQL|MySQL|MongoDB|Redis|DynamoDB|Firestore|SQLite|Cassandra)\b/gi, "database name"],
-  [/\b(Kubernetes|kubectl|Helm|Docker|Terraform|Ansible|Pulumi)\b/gi, "infrastructure tool"],
-  [/\b(useState|useEffect|useCallback|useMemo|useRef|@Entity|@Column)\b/gi, "framework annotation"],
+  [/\b(React|Vue|Angular|Svelte|Next\.?js|Nuxt|Vite|Webpack|Rollup|esbuild)\b/g, "frontend framework"],
+  [/\b(Express|Fastify|Hono|NestJS|Django|FastAPI|Flask|Spring|Rails)\b/g, "web framework"],
+  [/\b(PostgreSQL|MySQL|MongoDB|Redis|DynamoDB|Firestore|SQLite|Cassandra)\b/g, "database name"],
+  [/\b(Kubernetes|kubectl|Helm|Docker|Terraform|Ansible|Pulumi)\b/g, "infrastructure tool"],
+  [/\b(useState|useEffect|useCallback|useMemo|useRef|@Entity|@Column)\b/g, "framework annotation"],
   [/\bSELECT\s+\w+\s+FROM\b/i, "SQL statement"],
 ];
 

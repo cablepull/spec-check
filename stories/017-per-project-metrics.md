@@ -7,7 +7,7 @@
 ## Intent
 
 Knowing the current state of a project is useful. Knowing how it has trended over the
-last month is actionable — but only because the underlying data is aggregated and presented as a coherent picture rather than raw snapshots. This enables teams to act on trends rather than respond to isolated pass/fail results. `get_project_metrics` aggregates everything stored in Parquet
+last month is actionable — but only because the underlying data is aggregated and presented as a coherent picture rather than raw snapshots. This enables teams to act on trends rather than respond to isolated pass/fail results. The project metrics tool aggregates everything stored in Parquet
 for a single project and presents it as a coherent picture: gate pass rates over time,
 violation frequency, complexity trends with deltas, mutation score trajectory, assumption
 invalidation rate, story cycle times, and a weighted compliance score. The output must

@@ -10,8 +10,8 @@ Every check run produces data that should be queryable — not just retrievable 
 layer must support the full range of queries described in the PRD: cross-project rollups,
 per-model comparisons, per-branch comparisons, date-range filtering, check-type filtering,
 and service-level isolation in monorepos — all via glob patterns that prune at the filesystem
-level before DuckDB touches a single row. Parquet provides columnar compression, schema
-enforcement, and native DuckDB support. The naming convention encodes the dimensions that
+level before the query engine touches a single row. Columnar storage provides compression, schema
+enforcement, and native query engine support. The naming convention encodes the dimensions that
 benefit from filesystem pruning directly into the path, so queries are fast regardless of
 how many projects or how many months of history exist.
 

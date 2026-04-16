@@ -20,6 +20,23 @@ describe("nlp", () => {
     expect(result.evidence.length).toBeGreaterThan(0);
   });
 
+  it("R-6 does not flag lowercase 'rollup' (aggregation concept) as a framework name", () => {
+    const result = detectImplementationLeak("The cross-project rollup answers which model is most disciplined.");
+    expect(result.evidence.some((e) => e.includes("rollup"))).toBe(false);
+  });
+
+  it("R-6 does not flag lowercase 'express' (verb) as a framework name", () => {
+    const result = detectImplementationLeak("The server must express this guidance in machine-readable form.");
+    expect(result.evidence.some((e) => e.includes("express"))).toBe(false);
+  });
+
+  it("R-6 still flags capitalized framework names Rollup and Express", () => {
+    const rollup = detectImplementationLeak("The project bundles assets with Rollup for production.");
+    expect(rollup.evidence.some((e) => e.includes("Rollup"))).toBe(true);
+    const express = detectImplementationLeak("The API layer is built with Express for routing.");
+    expect(express.evidence.some((e) => e.includes("Express"))).toBe(true);
+  });
+
   it("R-6 does not flag public protocol identifiers as implementation leakage", () => {
     const result = detectImplementationLeak("When check_mutation_score is called Then `workflow.must_call_next` is returned by get_next_action.");
     expect(result.matched).toBe(false);
