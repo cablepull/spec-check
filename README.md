@@ -24,13 +24,15 @@ Projects maintain spec artifacts across several directories. Each gate checks on
 The runtime exposes the same tool catalog through MCP and the local JSON API. The primary workflow is:
 
 ```
-run_all          → runs all five gates, stops at first BLOCK
-gate_check:Gn    → targeted recheck of a single gate after a fix
-diff_check       → analyse git diff, identify which gates need re-running
-complexity       → CC, cognitive complexity, nesting, function length
-check_mutation_score → mutation testing with trend detection
-metrics          → query stored compliance history for a project
-get_rollup       → cross-project rankings and model comparisons
+run_all               → run all five gates, stop at first BLOCK
+gate_check            → targeted recheck of a single gate (gate: "G1"…"G5")
+validate_artifact     → validate a single story, ADR, or RCA file
+compile_requirements  → merge prd/*.md into requirements.md
+diff_check            → analyse git diff, identify which gates need re-running
+complexity            → CC, cognitive complexity, nesting, function length
+check_mutation_score  → mutation testing with trend detection
+metrics               → query stored compliance history for a project
+get_rollup            → cross-project rankings and model comparisons
 ```
 
 Each tool returns structured JSON with `data`, `meta`, and `workflow`, with per-check `status`, `criteria`, `evidence`, and `fix` instructions inside the tool payload.
@@ -122,22 +124,33 @@ Check what's available: call the `check_dependencies` tool.
 
 **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
 
+If installed via brew or `npm install -g`:
 ```json
 {
   "mcpServers": {
     "spec-check": {
-      "command": "npx",
-      "args": ["-y", "spec-check"],
-      "env": {
-        "LLM_PROVIDER": "anthropic",
-        "LLM_MODEL": "claude-sonnet-4-6"
-      }
+      "command": "spec-check",
+      "args": []
     }
   }
 }
 ```
 
-**Cursor / other MCP clients:** same `command` + `args`, placed in the client's MCP server config.
+If using npx (no global install):
+```json
+{
+  "mcpServers": {
+    "spec-check": {
+      "command": "npx",
+      "args": ["-y", "spec-check"]
+    }
+  }
+}
+```
+
+Run `spec-check init --tool claude --path .` to have this written to the right location automatically.
+
+**Cursor / other MCP clients:** same `command` + `args`, placed in the client's MCP server config. Or run `spec-check init --tool cursor --path .`.
 
 ## Local HTTP API
 
@@ -184,13 +197,13 @@ curl -s -X POST http://127.0.0.1:4319/api/tools/call \
 
 ## The five gates
 
-| Gate | Name | Blocks on |
-|---|---|---|
-| G1 | Intent Valid | Missing or malformed `intent.md` |
-| G2 | Requirements Valid | Requirements lack numbered rules, acceptance criteria, or feature coverage |
-| G3 | Design Valid | Design decisions undocumented or untraceable to requirements |
-| G4 | Tasks Valid | Work items missing, unlinked, or lacking status |
-| G5 | Executability Valid | No test directory or executable coverage present |
+| Gate | Name | Checks | Blocks on |
+|---|---|---|---|
+| G1 | Stories Valid | `stories/` | Missing intent, acceptance criteria, or constraint language |
+| G2 | PRD Valid | `prd/` | Feature/Rule/Example structure, missing negative examples |
+| G3 | ADR Valid | `adr/` | Missing sections, stale requirement traceability |
+| G4 | Tasks Valid | `tasks.md` | Compound tasks, tasks missing rule references |
+| G5 | Executability Valid | `tests/` | No test files, rules with no test coverage |
 
 `run_all` stops at the first BLOCKED gate and returns next-step instructions. Gates that pass continue.
 
@@ -264,7 +277,7 @@ Agents that call `begin_session` receive `WorkflowGuidance` after every tool cal
 {
   "phase": "implementation",
   "must_call_next": ["run_all"],
-  "should_call_metrics": true,
+  "should_call_metrics": false,
   "must_report_state": true,
   "blocked": false,
   "blocked_by": []
