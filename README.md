@@ -10,17 +10,201 @@ It runs entirely offline. No code, intent, or metrics leave the machine.
 
 ## Scientific basis
 
-spec-check applies **formal specification enforcement** to LLM-assisted development workflows. The core insight is that LLM output variability can be bounded by introducing deterministic external validators — analogous to type checkers or proof verifiers in formal methods — that evaluate artifacts against a fixed rule set and produce structured verdicts rather than probabilistic assessments.
+spec-check can be characterised as **constraint enforcement over a semi-formal logical substrate**. The artifact corpus — stories, PRDs, ADRs, tasks, and tests — constitutes a structured symbolic layer that encodes intent, behavioral contracts, decision rationale, and verification evidence. The gates enforce coherence constraints over this substrate: each layer must satisfy formal properties before the next layer can be constructed or evaluated. The substrate is *semi-formal* because the lower layers (stories, intent) use constrained natural language evaluated by heuristic rules, while the upper layers (task traceability, test coverage) admit fully deterministic predicate evaluation.
 
-**Gate-based workflow control.** The five-gate sequence (G1→G5) implements a directed acyclic dependency graph over spec artifact types. Each gate is a predicate function over a document corpus; a gate passes only when all its rule predicates evaluate to true. The system enforces monotonic forward progress: later gates cannot pass while earlier ones block.
+### The substrate: stratified artifact layers
 
-**Rule-based NLP over structured corpora.** Linguistic checks (intent quality, GIVEN/WHEN/THEN structure, causal language detection) use pattern matching and heuristic scoring rather than embedding-based similarity. This makes verdicts reproducible across models, runtimes, and time — essential for a gate system where the same input must always produce the same verdict.
+Each artifact type occupies a distinct epistemic stratum. Constraints flow downward — lower layers must be satisfied before upper layers are meaningful — and traceability flows upward, binding each implementation artifact to the intent that motivated it.
 
-**Cyclomatic and cognitive complexity as proxy metrics.** Code quality checks use McCabe's cyclomatic complexity (CC = 1 + number of linearly independent paths through a control flow graph) and cognitive complexity (a measure of how difficult code is to understand, weighted by nesting depth). These serve as proxy metrics for defect probability and maintainability.
+```mermaid
+flowchart TB
+    subgraph S1["Stratum 1 — Intent"]
+        I[intent.md\nProblem · Goals · Constraints · Assumptions]
+        ST[stories/\nFeature intent · Acceptance criteria · ADR flag]
+    end
+    subgraph S2["Stratum 2 — Behavioral Contract"]
+        P[prd/\nFeature → Rule → Example · Negative cases]
+        R[requirements.md\nCompiled contract — do not edit directly]
+        P -->|compile_requirements| R
+    end
+    subgraph S3["Stratum 3 — Decision Rationale"]
+        A[adr/\nDecision · Traceability table · Consequences]
+    end
+    subgraph S4["Stratum 4 — Implementation Contract"]
+        T[tasks.md\nAtomic tasks · Rule citations · Status]
+    end
+    subgraph S5["Stratum 5 — Verification"]
+        TS[tests/\nExecutable coverage · Rule-named test cases]
+    end
+    subgraph S6["Stratum 6 — Incident Record"]
+        RC[rca/\nRoot cause · ADR amendment · Assumption update]
+    end
 
-**Longitudinal compliance tracking.** Every gate check writes a structured record to a local columnar store (Parquet via DuckDB). This enables time-series analysis of spec adherence, assumption invalidation rates, and model-level compliance comparisons — treating software quality as a measurable, improvable signal rather than a static audit.
+    S1 -->|constrains| S2
+    S2 -->|constrains| S3
+    S3 -->|constrains| S4
+    S4 -->|constrains| S5
+    S5 -.->|findings feed| S6
+    S6 -.->|amends| S3
+```
 
-**Mutation testing integration.** The `check_mutation_score` tool integrates with language-specific mutation frameworks (Stryker, mutmut, cargo-mutants) to measure test suite effectiveness by the fraction of artificially introduced defects that are caught. This distinguishes test coverage (lines executed) from test adequacy (defects detected).
+### Artifact coherence constraints
+
+Traceability requirements form explicit cross-stratum constraints. An ADR that references a nonexistent rule, or a task that cites no rule ID, violates a coherence constraint independently of whether the artifact is otherwise well-formed.
+
+```mermaid
+erDiagram
+    STORY ||--o{ PRD_FEATURE : "scopes"
+    PRD_FEATURE ||--|{ RULE : "contains"
+    RULE ||--|{ EXAMPLE : "has"
+    EXAMPLE }|--|| GIVEN_WHEN_THEN : "expressed as"
+    ADR }|--|{ RULE : "traces to"
+    TASK }|--|| RULE : "cites"
+    TEST_CASE }|--|| RULE : "covers"
+    RCA }o--|| ADR : "amends"
+    RCA }o--o{ ASSUMPTION : "invalidates"
+    ASSUMPTION ||--o{ STORY : "declared in"
+```
+
+### Gate-based constraint enforcement
+
+The five gates implement a directed acyclic dependency graph over the substrate strata. Each gate is a conjunction of predicate functions; the gate passes only when all predicates evaluate to true. The system enforces monotonic forward progress — a gate cannot pass while any predecessor is blocked.
+
+```mermaid
+flowchart LR
+    subgraph Corpus
+        I2[intent.md\nstories/]
+        P2[prd/]
+        A2[adr/]
+        T2[tasks.md]
+        TS2[tests/]
+    end
+
+    I2 --> G1
+    P2 --> G2
+    A2 --> G3
+    T2 --> G4
+    TS2 --> G5
+
+    G1{G1\nStories Valid} -->|PASS| G2{G2\nPRD Valid}
+    G2 -->|PASS| G3{G3\nADR Valid}
+    G3 -->|PASS| G4{G4\nTasks Valid}
+    G4 -->|PASS| G5{G5\nExecutability Valid}
+    G5 -->|PASS| OK([✅ all gates clear])
+
+    G1 -->|BLOCK| B1([❌ workflow halted])
+    G2 -->|BLOCK| B2([❌ workflow halted])
+    G3 -->|BLOCK| B3([❌ workflow halted])
+    G4 -->|BLOCK| B4([❌ workflow halted])
+    G5 -->|BLOCK| B5([❌ workflow halted])
+```
+
+### Gate state machine
+
+Each gate produces one of four verdicts. PASSING_WITH_WARNINGS allows the workflow to advance while flagging heuristic concerns that do not meet the threshold for a hard block.
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Unchecked
+    Unchecked --> Pass : all predicates true
+    Unchecked --> PassingWithWarnings : predicates pass\nheuristics warn
+    Unchecked --> Failing : non-critical\npredicates false
+    Unchecked --> Blocked : critical\npredicates false
+    Pass --> Unchecked : artifact mutated
+    PassingWithWarnings --> Unchecked : artifact mutated
+    Blocked --> Unchecked : artifact corrected
+    Failing --> Unchecked : artifact corrected
+    Pass --> [*] : workflow advances
+    Blocked --> [*] : workflow halted
+```
+
+### LLM autonomous correction loop
+
+Because every verdict is deterministic and includes specific violations with fix instructions, an LLM can close the correction loop without human intervention. The sequence below is the core interaction pattern.
+
+```mermaid
+sequenceDiagram
+    participant LLM
+    participant spec-check
+    participant Corpus as Artifact Corpus
+
+    LLM->>spec-check: run_all(path)
+    spec-check->>Corpus: read all strata
+    Corpus-->>spec-check: document corpus
+    spec-check->>spec-check: evaluate G1→G5 predicates
+    spec-check-->>LLM: BLOCKED at G2 · violations · fix instructions
+
+    loop until PASS
+        LLM->>Corpus: revise prd/ artifact
+        LLM->>spec-check: gate_check(G2)
+        spec-check->>Corpus: read prd/
+        spec-check-->>LLM: verdict + remaining violations
+    end
+
+    LLM->>spec-check: run_all(path)
+    spec-check-->>LLM: all gates PASS · workflow advances
+    spec-check->>spec-check: write Parquet record
+```
+
+### Formal vs. heuristic checks
+
+Not all constraints are equally formal. Structural checks (file existence, rule ID citation, test-to-rule mapping) are fully deterministic. Semantic checks (problem precedes solution, causal language density) are heuristic — they score evidence from the text and apply configurable thresholds.
+
+```mermaid
+quadrantChart
+    title Gate Checks by Formality and Abstraction Level
+    x-axis Structural --> Semantic
+    y-axis Heuristic --> Formal
+    quadrant-1 Formal · Semantic
+    quadrant-2 Formal · Structural
+    quadrant-3 Heuristic · Structural
+    quadrant-4 Heuristic · Semantic
+    Rule ID traceability: [0.12, 0.92]
+    File existence: [0.08, 0.95]
+    Test-to-rule coverage: [0.18, 0.88]
+    Cyclomatic complexity: [0.28, 0.90]
+    Compound task detection: [0.38, 0.82]
+    GIVEN state vs action: [0.62, 0.78]
+    GWT structure: [0.45, 0.85]
+    Causal language: [0.72, 0.32]
+    Problem precedes solution: [0.82, 0.22]
+    Constraint language density: [0.78, 0.28]
+```
+
+Checks in the upper half produce binary verdicts regardless of confidence. Checks in the lower half produce scored verdicts and block only when the score falls below a configurable threshold, making them tunable without changing the predicate logic.
+
+### Longitudinal compliance tracking
+
+Every gate check writes a Parquet record to a local columnar store (DuckDB). This enables time-series analysis of spec adherence across sessions, models, and projects — treating compliance as a measurable signal rather than a point-in-time audit.
+
+```mermaid
+xychart-beta
+    title "Illustrative compliance score over development iterations"
+    x-axis ["S-001", "S-005", "S-010", "S-015", "S-020", "S-025", "S-030", "S-035"]
+    y-axis "Compliance score (%)" 0 --> 100
+    line [42, 55, 61, 70, 74, 82, 89, 97]
+    bar  [42, 55, 61, 70, 74, 82, 89, 97]
+```
+
+Tracked signals include gate pass rates, cyclomatic complexity trend (max CC vs threshold), mutation score, assumption invalidation rate, and per-model compliance comparisons when multiple LLMs contribute to the same project.
+
+### Mutation testing: coverage vs. adequacy
+
+The `check_mutation_score` tool integrates with language-specific mutation frameworks (Stryker, mutmut, cargo-mutants, go-mutesting) to measure test suite *adequacy* — the fraction of artificially introduced defects that the test suite detects. This is distinct from line coverage, which measures only which code paths are executed, not whether the assertions are strong enough to catch mutations of those paths.
+
+```mermaid
+flowchart LR
+    subgraph Mutation["Mutation testing cycle"]
+        SRC[Source\nunder test] -->|mutate| MUT[Mutant\nversions]
+        MUT -->|run suite against each| TS3[Test suite]
+        TS3 -->|killed| K([mutant killed\n✅ test caught defect])
+        TS3 -->|survived| SV([mutant survived\n❌ test missed defect])
+    end
+    K & SV --> SCORE[Mutation score\n= killed ÷ total]
+    SCORE -->|below MT-1 threshold| BLK([G5 BLOCK])
+    SCORE -->|above threshold| PSS([G5 contribution PASS])
+```
 
 ---
 
