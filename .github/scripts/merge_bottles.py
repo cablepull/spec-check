@@ -25,9 +25,10 @@ def iter_formula_entries(data):
         yield from data.values()
 
 
-def load_bottles(json_files: list[str]) -> dict[str, str]:
-    """Return {os_tag: sha256} from all bottle JSON files."""
+def load_bottles(json_files: list[str]) -> tuple[dict[str, str], int]:
+    """Return ({os_tag: sha256}, rebuild) from all bottle JSON files."""
     bottles: dict[str, str] = {}
+    rebuild = 0
     for path in json_files:
         with open(path) as f:
             raw = f.read().strip()
@@ -37,15 +38,18 @@ def load_bottles(json_files: list[str]) -> dict[str, str]:
             if not isinstance(formula_data, dict):
                 continue
             bottle = formula_data.get("bottle", {})
+            rebuild = max(rebuild, int(bottle.get("rebuild", 0)))
             tags = bottle.get("tags", {})
             for tag, info in tags.items():
                 if isinstance(info, dict) and "sha256" in info:
                     bottles[tag] = info["sha256"]
-    return bottles
+    return bottles, rebuild
 
 
-def build_bottle_block(root_url: str, bottles: dict[str, str]) -> str:
+def build_bottle_block(root_url: str, bottles: dict[str, str], rebuild: int) -> str:
     lines = ["  bottle do", f'    root_url "{root_url}"']
+    if rebuild > 0:
+        lines.append(f"    rebuild {rebuild}")
     # arm64 variants first, then others, alphabetically within each group
     for tag in sorted(bottles, key=lambda t: (not t.startswith("arm64"), t)):
         lines.append(f'    sha256 cellar: :any_skip_relocation, {tag}: "{bottles[tag]}"')
@@ -86,12 +90,12 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Found JSON files: {json_files}")
-    bottles = load_bottles(json_files)
+    bottles, rebuild = load_bottles(json_files)
     if not bottles:
         print("No bottle entries found in JSON files.", file=sys.stderr)
         sys.exit(1)
 
-    bottle_block = build_bottle_block(root_url, bottles)
+    bottle_block = build_bottle_block(root_url, bottles, rebuild)
     patch_formula(formula_path, bottle_block)
 
     print(f"Patched {formula_path} with {len(bottles)} bottle(s):")
