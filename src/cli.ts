@@ -3,12 +3,13 @@ import { startMcpServer } from "./index.js";
 import { startDashboardServer } from "./dashboard.js";
 import { runInit, initResultToText } from "./init.js";
 
-export function resolveCliCommand(argv: string[]): { mode: "mcp" | "server" | "init" | "help" | "unknown"; rest: string[] } {
+export function resolveCliCommand(argv: string[]): { mode: "mcp" | "server" | "init" | "help" | "version" | "unknown"; rest: string[] } {
   const [subcommand, ...rest] = argv;
   if (!subcommand) return { mode: "mcp", rest: [] };
   if (subcommand === "server" || subcommand === "dashboard") return { mode: "server", rest };
   if (subcommand === "init") return { mode: "init", rest };
   if (subcommand === "help" || subcommand === "--help" || subcommand === "-h") return { mode: "help", rest: [] };
+  if (subcommand === "--version" || subcommand === "-V" || subcommand === "version") return { mode: "version", rest: [] };
   return { mode: "unknown", rest };
 }
 
@@ -43,6 +44,11 @@ async function main() {
     const result = await runInit({ ...opts, write: true } as Parameters<typeof runInit>[0]);
     process.stdout.write(initResultToText(result) + "\n");
     if (result.error) process.exit(1);
+    return;
+  }
+
+  if (mode === "version") {
+    process.stdout.write("0.1.0\n");
     return;
   }
 

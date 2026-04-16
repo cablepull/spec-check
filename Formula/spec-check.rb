@@ -1,23 +1,23 @@
 class SpecCheck < Formula
   desc "Spec-driven development gate system for LLM-driven tools"
   homepage "https://github.com/cablepull/spec-check"
-  url "https://registry.npmjs.org/spec-check/-/spec-check-0.1.0.tgz"
+  url "https://github.com/cablepull/spec-check/archive/refs/tags/v0.1.0.tar.gz"
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license "MIT"
-  version "0.1.0"
 
   depends_on "node"
 
   def install
-    system "npm", "install", "--prefix", libexec, "--production", "--ignore-scripts"
-    # Copy the published package into libexec
-    cp_r ".", libexec/"lib"
-    system "npm", "install", "--prefix", libexec/"lib", "--production", "--ignore-scripts"
+    # Install all deps (including devDeps for tsc), compile TypeScript, then prune
+    system "npm", "ci"
+    system "npm", "run", "build"
+    system "npm", "prune", "--omit=dev"
 
-    # Write a shell shim so `spec-check` is on PATH
+    libexec.install Dir["*"]
+
     (bin/"spec-check").write <<~SH
       #!/bin/sh
-      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/lib/dist/cli.js" "$@"
+      exec "#{Formula["node"].opt_bin}/node" "#{libexec}/dist/cli.js" "$@"
     SH
   end
 
@@ -33,17 +33,28 @@ class SpecCheck < Formula
 
         spec-check init --all --path .
 
-      To register spec-check as an MCP server in Claude, add the entry
-      printed by `spec-check init --tool claude` to your MCP configuration.
+      To register spec-check as an MCP server in Claude, add the following
+      to your MCP configuration, then restart Claude:
 
-      For the HTTP API daemon:
+        {
+          "mcpServers": {
+            "spec-check": {
+              "command": "spec-check",
+              "args": []
+            }
+          }
+        }
+
+      Or run `spec-check init --tool claude --path <project>` to write it automatically.
+
+      For the local HTTP API and dashboard:
 
         spec-check server --path .
     EOS
   end
 
   test do
-    assert_match version.to_s, shell_output("#{bin}/spec-check --version 2>&1", 1)
-    assert_match "spec-check", shell_output("#{bin}/spec-check --help 2>&1")
+    assert_match "0.1.0", shell_output("#{bin}/spec-check --version")
+    assert_match "spec-check", shell_output("#{bin}/spec-check --help")
   end
 end
