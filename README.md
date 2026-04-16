@@ -38,6 +38,28 @@ Each tool returns structured JSON with `data`, `meta`, and `workflow`, with per-
 
 **Requirements:** Node.js 18+, git
 
+**Homebrew (macOS):**
+
+```bash
+brew tap cablepull/spec-check
+brew install spec-check
+```
+
+After install, brew prints setup instructions. To configure your LLM tool:
+
+```bash
+spec-check init --tool claude --path .   # Claude Code
+spec-check init --tool cursor --path .   # Cursor
+spec-check init --tool gemini --path .   # Gemini CLI
+spec-check init --tool codex  --path .   # OpenAI Codex
+spec-check init --tool ollama --path .   # Ollama
+spec-check init --all         --path .   # all detected tools
+```
+
+Use `--force` to overwrite existing config files, `--install` to install missing dependencies.
+
+**npm:**
+
 ```bash
 npm install -g spec-check   # or: npx spec-check
 ```
