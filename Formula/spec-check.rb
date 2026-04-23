@@ -5,6 +5,13 @@ class SpecCheck < Formula
   sha256 "c1d911927f76f924241729ea0c82a3cebb67cbeed68eb2c9516c49f22b41a925"
   license "MIT"
 
+  bottle do
+    root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.2"
+    rebuild 1
+    sha256 cellar: :any_skip_relocation, arm64_sequoia: "06793a9e423c13f823db86cc1dbd737216b0d6b7e94d5525e662629651483231"
+    sha256 cellar: :any_skip_relocation, arm64_sonoma: "adb55de7705504ac9aa6f48219063bddd904414e5b19b2132c04fd6c2a95a2e8"
+  end
+
   depends_on "node@24"
 
   def install
