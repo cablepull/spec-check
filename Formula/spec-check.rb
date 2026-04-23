@@ -2,7 +2,7 @@ class SpecCheck < Formula
   desc "Spec-driven development gate system for LLM-driven tools"
   homepage "https://github.com/cablepull/spec-check"
   url "https://github.com/cablepull/spec-check/archive/refs/tags/v0.1.2.tar.gz"
-  sha256 "PLACEHOLDER_SHA256_WILL_BE_FILLED_AFTER_TAG_PUSH"
+  sha256 "c1d911927f76f924241729ea0c82a3cebb67cbeed68eb2c9516c49f22b41a925"
   license "MIT"
 
   depends_on "node@24"
