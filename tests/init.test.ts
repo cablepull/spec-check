@@ -164,7 +164,8 @@ describe("R-72 homebrew formula", () => {
 
   it("formula declares node as a dependency", () => {
     const content = readFileSync(formulaPath, "utf8");
-    expect(content).toMatch(/depends_on\s+["']node["']/);
+    // Formula pins to node@24; accept any node or node@<version> dependency
+    expect(content).toMatch(/depends_on\s+["']node(@\d+)?["']/);
   });
 
   it("formula references the spec-check package by name", () => {

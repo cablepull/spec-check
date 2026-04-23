@@ -11,7 +11,8 @@ type TrendDirection = "improving" | "declining" | "stable" | "insufficient_data"
 interface GateRecord {
   timestamp: string;
   gate: string;
-  gate_status: string;
+  gate_status?: string;   // v1 field
+  status?: string;        // v2 field (canonical); gate_status kept for backwards compat
   run_batch_id?: string | null;
   results?: unknown;
   criteria?: unknown;
@@ -296,26 +297,36 @@ function sqlString(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+// Singleton in-memory DuckDB instance — shared across all metrics queries in a process lifetime.
+let _duckDb: duckdb.Database | null = null;
+function getDuckDb(): duckdb.Database {
+  if (!_duckDb) _duckDb = new duckdb.Database(":memory:");
+  return _duckDb;
+}
+
 function queryDuckDb(sql: string): Promise<any[]> {
   return new Promise((resolvePromise, reject) => {
-    const db = new duckdb.Database(":memory:");
-    db.all(sql, (err, rows) => {
-      db.close();
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolvePromise(rows);
+    const conn = new duckdb.Connection(getDuckDb());
+    conn.all(sql, (err: duckdb.DuckDbError | null, rows: duckdb.TableData) => {
+      conn.close();
+      if (err) { reject(err); return; }
+      resolvePromise(rows ?? []);
     });
   });
 }
 
+// Read Parquet files matching a glob via DuckDB's read_parquet.
+// union_by_name=true reconciles v1 and v2 schema differences (different column sets).
 async function readParquetRows(glob: string, whereClause?: string): Promise<any[]> {
   const source = `read_parquet(${sqlString(glob)}, union_by_name=true)`;
   const sql = `SELECT * FROM ${source}${whereClause ? ` WHERE ${whereClause}` : ""}`;
   try {
     return await queryDuckDb(sql);
-  } catch {
+  } catch (e) {
+    const msg = String(e);
+    // "No files found" is expected when no data has been recorded yet
+    if (msg.includes("No files found")) return [];
+    process.stderr.write(`[spec-check] DuckDB read failed for ${glob}: ${e}\n`);
     return [];
   }
 }
@@ -348,7 +359,8 @@ function isRowBeforeSince(stamp: number, sinceMs: number | null): boolean {
 }
 
 function isGateRow(row: any): boolean {
-  return row.check_type === "gate" || /^G[1-5]$/.test(row.gate ?? "");
+  // v2: check_type = "gate"; v1: no check_type but gate field is G1-G5 and gate_status present
+  return row.check_type === "gate" || (/^G[1-5]$/.test(row.gate ?? "") && (row.gate_status != null || row.status != null));
 }
 
 const CC1_THRESHOLD = 10;
@@ -414,7 +426,7 @@ function computeGatePassRates(gateRecords: GateRecord[]): ProjectMetrics["gate_p
   };
   for (const gate of ["G1", "G2", "G3", "G4", "G5"] as const) {
     const records = gateRecords.filter((record) => record.gate === gate).sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-    const history = records.map((record) => ({ timestamp: record.timestamp, pass_rate: gateStatusPass(record.gate_status) ? 1 : 0, run_batch_id: record.run_batch_id ?? null }));
+    const history = records.map((record) => ({ timestamp: record.timestamp, pass_rate: gateStatusPass(String(record.status ?? record.gate_status ?? "")) ? 1 : 0, run_batch_id: record.run_batch_id ?? null }));
     // Use only full-sweep (run_all) records for value and trend so targeted gate_check
     // re-runs don't inflate or deflate the aggregate. Fall back to all records when no
     // run_all records exist yet (e.g. early history predating run_batch_id).
@@ -494,7 +506,7 @@ function computeAgentActivity(gateRecords: GateRecord[], agentStateRows: any[]):
   for (const row of gateRecords as Array<GateRecord & { agent_id?: string }>) {
     if (!row.agent_id) continue;
     const current = gateRowsByAgent.get(row.agent_id) ?? [];
-    current.push({ pass: gateStatusPass(row.gate_status) ? 100 : 0, gate: row.gate });
+    current.push({ pass: gateStatusPass(String(row.status ?? row.gate_status ?? "")) ? 100 : 0, gate: row.gate });
     gateRowsByAgent.set(row.agent_id, current);
   }
   const latestStateByAgent = new Map<string, any>();
@@ -727,10 +739,14 @@ export async function getProjectMetrics(
     return metrics;
   }
 
-  const rows = await readParquetRows(
+  // Read all records for this service — directory scoping already constrains to the right project.
+  // We filter by project_path / path in application code to handle both v1 (path column) and
+  // v2 (project_path column) records, avoiding SQL COALESCE over potentially absent columns.
+  const allRows = await readParquetRows(
     globPattern(storage.storageRoot, storage.org, storage.repo, storage.service),
-    `project_path = ${sqlString(projectPath)}`
   );
+  // Cross-version path filter: v1 uses `path`, v2 uses `project_path`.
+  const rows = allRows.filter((row) => (row.project_path ?? row.path) === projectPath);
   if (rows.length === 0) {
     notes.push({ code: "NO_DATA", detail: "No stored metrics data exists for this project yet." });
     metrics.durationMs = Date.now() - start;
@@ -964,7 +980,9 @@ function populateGateRowMaps(
   agentGateMap: Map<string, AgentGateEntry>
 ): void {
   for (const row of gateRows) {
-    const pass = gateStatusPass(row.gate_status) ? 100 : 0;
+    // v1 records have gate_status; v2 records have status (gate_status kept for compat)
+    const effectiveStatus = String(row.status ?? row.gate_status ?? "");
+    const pass = gateStatusPass(effectiveStatus) ? 100 : 0;
     const projectEntry = getOrInitProjectEntry(projectMap, rollupProjectKey(row));
     rememberProjectPath(projectEntry, row);
     if (projectEntry.gates[row.gate]) projectEntry.gates[row.gate]!.push(pass);
@@ -1115,7 +1133,7 @@ function buildAdoptionTrend(gateRows: any[], weights: ResolvedConfig["value"]["c
     const project = rollupProjectKey(row);
     const dayEntry = byDay.get(day) ?? new Map<string, Record<string, number[]>>();
     const projectEntry = dayEntry.get(project) ?? { G1: [], G2: [], G3: [], G4: [], G5: [] };
-    if (projectEntry[row.gate]) projectEntry[row.gate]!.push(gateStatusPass(row.gate_status) ? 100 : 0);
+    if (projectEntry[row.gate]) projectEntry[row.gate]!.push(gateStatusPass(String(row.status ?? row.gate_status ?? "")) ? 100 : 0);
     dayEntry.set(project, projectEntry);
     byDay.set(day, dayEntry);
   }
@@ -1297,7 +1315,6 @@ export async function getRollupMetrics(
 ): Promise<RollupMetrics> {
   const start = Date.now();
   const notes: RollupMetrics["notes"] = [];
-  const root = globPattern(config.value.metrics.db_path);
   const sinceMs = since ? Date.parse(since) : null;
   const result: RollupMetrics = {
     status: "PASS",
@@ -1320,7 +1337,7 @@ export async function getRollupMetrics(
     notes,
   };
 
-  const rows = await readParquetRows(root);
+  const rows = await readParquetRows(globPattern(config.value.metrics.db_path));
   if (rows.length === 0) {
     notes.push({ code: "NO_DATA", detail: "No stored metrics data exists in the storage root yet." });
     result.durationMs = Date.now() - start;

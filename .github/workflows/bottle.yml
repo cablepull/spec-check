@@ -87,7 +87,11 @@ jobs:
     name: Update formula with bottle hashes
     needs: build
     runs-on: ubuntu-latest
-    if: always() && !cancelled() && needs.build.result != 'skipped'
+    # Only update the formula when every matrix build succeeded.
+    # A partial build (one platform failed) would leave the formula with
+    # missing sha256 entries, causing brew install to fall back to source
+    # for users on the missing platform.
+    if: needs.build.result == 'success'
 
     steps:
       - uses: actions/checkout@v4

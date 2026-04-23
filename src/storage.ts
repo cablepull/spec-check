@@ -4,7 +4,30 @@ import { join, dirname, resolve, isAbsolute } from "path";
 import { homedir, tmpdir } from "os";
 import { execFileSync, execSync } from "child_process";
 import { randomUUID } from "crypto";
+import { createRequire } from "module";
 import type { ActorIdentity, LLMIdentity, ServiceInfo } from "./types.js";
+
+// ─── DuckDB module resolution ─────────────────────────────────────────────────
+//
+// Subprocesses spawned with `node -e "..."` resolve bare require() calls from
+// the process's cwd — which in production (Homebrew install, npx, etc.) is
+// the user's project directory, NOT the directory where spec-check is installed.
+// As a result, `require("duckdb")` inside a subprocess always fails outside
+// the spec-check source tree.
+//
+// Fix: resolve the absolute path to the duckdb entry point once, at module load
+// time, using the current file's location as the search root.  This path is
+// then embedded as a literal string in every subprocess code fragment so that
+// `require(DUCKDB_REQUIRE_PATH)` works from any cwd.
+//
+const _require = createRequire(import.meta.url);
+let DUCKDB_REQUIRE_PATH: string;
+try {
+  DUCKDB_REQUIRE_PATH = _require.resolve("duckdb");
+} catch {
+  // Fallback: bare require — will work when running from within the spec-check tree
+  DUCKDB_REQUIRE_PATH = "duckdb";
+}
 
 // ─── Path resolution ──────────────────────────────────────────────────────────
 
@@ -136,7 +159,7 @@ export function writeRecord(
     writeFileSync(tmpJson, JSON.stringify(serialised) + "\n", "utf-8");
 
     execFileSync(process.execPath, ["-e", `
-      const duckdb = require("duckdb");
+      const duckdb = require(${JSON.stringify(DUCKDB_REQUIRE_PATH)});
       const db = new duckdb.Database(":memory:");
       const src = process.argv[1];
       const out = process.argv[2];
@@ -161,7 +184,7 @@ function convertJsonlToParquet(sourcePath: string, targetPath: string): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const tmpParquet = targetPath + ".tmp.parquet";
   execFileSync(process.execPath, ["-e", `
-    const duckdb = require("duckdb");
+    const duckdb = require(${JSON.stringify(DUCKDB_REQUIRE_PATH)});
     const db = new duckdb.Database(":memory:");
     const src = process.argv[1];
     const out = process.argv[2];
@@ -241,7 +264,7 @@ export function runDuckQuery(sql: string): any[] {
   const outputPath = join(tmpdir(), `spec-check-duck-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
   try {
     execFileSync(process.execPath, ["-e", `
-      const duckdb = require("duckdb");
+      const duckdb = require(${JSON.stringify(DUCKDB_REQUIRE_PATH)});
       const fs = require("fs");
       const db = new duckdb.Database(":memory:");
       const sql = process.argv[1];
@@ -312,6 +335,50 @@ export function buildGateRecord(opts: {
     duration_ms: opts.durationMs,
   };
 }
+
+// ─── Query ────────────────────────────────────────────────────────────────────
+
+/**
+ * Guard that rejects any SQL containing mutating or DDL statements.
+ * Only SELECT and WITH…SELECT queries are permitted.
+ */
+function assertSelectOnly(sql: string): void {
+  const trimmed = sql.trim().toUpperCase();
+  if (!trimmed.startsWith("SELECT") && !trimmed.startsWith("WITH")) {
+    throw new Error(
+      "Only SELECT (and WITH … SELECT) queries are allowed. " +
+      "Received: " + sql.slice(0, 80)
+    );
+  }
+  const forbidden = /\b(INSERT|UPDATE|DELETE|DROP|CREATE|ALTER|TRUNCATE|COPY|EXECUTE|CALL)\b/;
+  if (forbidden.test(trimmed)) {
+    throw new Error(
+      "Destructive SQL keywords detected. Only read-only SELECT queries are permitted."
+    );
+  }
+}
+
+/**
+ * Run a user-supplied SELECT query against the spec-check Parquet store.
+ *
+ * The virtual table alias `spec_records` is automatically rewritten to a
+ * `read_parquet(glob, union_by_name=true)` expression pointing at the full
+ * storage root (or a scoped path if `...parts` are supplied).
+ *
+ * @param sql         DuckDB SELECT statement — may reference `spec_records`
+ * @param storageRoot Configured metrics.db_path value
+ * @param parts       Optional sub-path parts to scope the glob (org/repo/service)
+ */
+export function runSpecQuery(sql: string, storageRoot: string, ...parts: string[]): unknown[] {
+  assertSelectOnly(sql);
+  const glob = globPattern(storageRoot, ...parts);
+  // Replace every occurrence of the virtual alias (case-insensitive, word-boundary)
+  const parquetExpr = `read_parquet('${glob.replace(/'/g, "''")}', union_by_name=true)`;
+  const resolved = sql.replace(/\bspec_records\b/gi, parquetExpr);
+  return runDuckQuery(resolved);
+}
+
+// ─── Smoke test ───────────────────────────────────────────────────────────────
 
 // Smoke test: verify storage root is accessible
 export function smokeTest(storageRoot: string): { ok: boolean; error?: string } {

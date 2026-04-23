@@ -13,6 +13,7 @@ import {
   globPattern,
   migrateLegacyJsonlRecords,
   runDuckQuery,
+  runSpecQuery,
   smokeTest,
   writeRecord,
 } from "../src/storage.js";
@@ -263,6 +264,85 @@ describe("runDuckQuery", () => {
     const dir = makeTmp("spec-check-duck-empty-");
     const rows = runDuckQuery(`SELECT * FROM read_parquet('${join(dir, "**", "*.parquet")}')`);
     expect(rows).toEqual([]);
+  });
+});
+
+// ── runSpecQuery ──────────────────────────────────────────────────────────────
+
+describe("runSpecQuery", () => {
+  function writeTestRecord(storageRoot: string, data: Record<string, unknown>): void {
+    const service: ServiceInfo = { name: "svc", rootPath: "/tmp/proj", specPath: "/tmp/proj" };
+    const paths = buildStoragePaths("/tmp/proj", service, storageRoot);
+    const fp = buildFilePath(paths, fakeLlm, "gate-G1");
+    writeRecord(fp, data);
+  }
+
+  it("rejects non-SELECT statements", () => {
+    const dir = makeTmp("spec-check-sq-");
+    expect(() => runSpecQuery("DROP TABLE foo", dir)).toThrow(/Only SELECT/);
+    expect(() => runSpecQuery("DELETE FROM spec_records", dir)).toThrow(/Only SELECT/);
+    expect(() => runSpecQuery("INSERT INTO t VALUES (1)", dir)).toThrow(/Only SELECT/);
+  });
+
+  it("rejects COPY even inside a SELECT prefix", () => {
+    const dir = makeTmp("spec-check-sq-");
+    expect(() => runSpecQuery("SELECT 1; COPY t TO '/tmp/out.csv'", dir)).toThrow(/Destructive SQL/);
+  });
+
+  it("allows WITH … SELECT (CTE) queries", () => {
+    const dir = makeTmp("spec-check-sq-");
+    // No data — just check it doesn't throw on syntax
+    const rows = runSpecQuery("WITH t AS (SELECT 42 AS n) SELECT n FROM t", dir);
+    expect(Array.isArray(rows)).toBe(true);
+    expect((rows as any[])[0]?.n).toBe(42);
+  });
+
+  it("rewrites spec_records to a read_parquet glob and returns written rows", () => {
+    const dir = makeTmp("spec-check-sq-");
+    writeTestRecord(dir, {
+      check_type: "gate",
+      gate: "G1",
+      status: "PASS",
+      project_path: "/tmp/proj",
+    });
+
+    const rows = runSpecQuery(
+      "SELECT check_type, gate, status FROM spec_records WHERE check_type = 'gate'",
+      dir,
+    ) as Array<Record<string, unknown>>;
+
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.gate).toBe("G1");
+    expect(rows[0]!.status).toBe("PASS");
+  });
+
+  it("returns empty array when no files match the glob", () => {
+    const dir = makeTmp("spec-check-sq-empty-");
+    const rows = runSpecQuery("SELECT COUNT(*) AS n FROM spec_records", dir);
+    expect(Array.isArray(rows)).toBe(true);
+  });
+
+  it("is case-insensitive for the spec_records alias", () => {
+    const dir = makeTmp("spec-check-sq-ci-");
+    writeTestRecord(dir, { check_type: "gate", gate: "G2", status: "BLOCK" });
+    const rows = runSpecQuery("SELECT gate FROM SPEC_RECORDS", dir) as Array<Record<string, unknown>>;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.gate).toBe("G2");
+  });
+
+  it("scopes the glob to supplied path parts", () => {
+    const dir = makeTmp("spec-check-sq-scope-");
+    writeTestRecord(dir, { check_type: "gate", gate: "G3", project_path: "/tmp/proj" });
+    // Scoped to the same org/repo/service that writeTestRecord uses
+    const rows = runSpecQuery(
+      "SELECT gate FROM spec_records",
+      dir,
+      "local",
+      "proj",
+      "svc",
+    ) as Array<Record<string, unknown>>;
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows[0]!.gate).toBe("G3");
   });
 });
 

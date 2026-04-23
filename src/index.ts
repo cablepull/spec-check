@@ -46,7 +46,7 @@ import {
   formatSupersessionHistoryResult,
   formatRunResult,
 } from "./format.js";
-import { buildStoragePaths, buildFilePath, buildGateRecord, writeRecord, smokeTest, migrateLegacyJsonlRecords } from "./storage.js";
+import { buildStoragePaths, buildFilePath, buildGateRecord, writeRecord, smokeTest, migrateLegacyJsonlRecords, runSpecQuery } from "./storage.js";
 import { validateArtifacts } from "./artifacts.js";
 import { runReconciliation, formatReconciliationReport } from "./reconciliation.js";
 import { runEvidenceCheck, formatEvidenceReport } from "./evidence.js";
@@ -56,7 +56,7 @@ import { buildSpecGuide, specGuideToText } from "./guide.js";
 import { actorFields, beginSession, computeWorkflowGuidance, latestAgentState, listAgentState, persistAgentState, type AgentStateReportResult } from "./workflow.js";
 import type { ToolArgs, Format, GateResult, ResolvedConfig, RunResult, ActorIdentity, WorkflowGuidance, AgentState } from "./types.js";
 
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.1.2";
 
 // ── Tool definitions ──────────────────────────────────────────────────────────
 
@@ -467,6 +467,44 @@ export const TOOL_DEFINITIONS: Tool[] = [
         format: { type: "string", enum: ["text", "json"], description: "Output format (default: text)" },
       },
       required: ["path"],
+    },
+  },
+  {
+    name: "query",
+    description:
+      "Run an arbitrary DuckDB SELECT query against the spec-check Parquet metrics store. " +
+      "Use `FROM spec_records` as a virtual table alias that resolves to all stored check records " +
+      "across every project, gate, and check type. " +
+      "Only SELECT (and WITH … SELECT) queries are permitted — destructive or DDL statements are rejected. " +
+      "Useful for ad-hoc analytics: pass rates over time, per-model comparisons, gate failure patterns, etc.\n\n" +
+      "Available columns (union_by_name — older records may omit some):\n" +
+      "  schema_version, check_type, project_path, org, repo, service,\n" +
+      "  timestamp, git_commit, branch, llm_provider, llm_model, llm_id,\n" +
+      "  agent_id, agent_kind, session_id, run_id,\n" +
+      "  gate, status, gate_status, criteria, duration_ms, run_batch_id,\n" +
+      "  base, files, categories, notes (diff records only)",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sql: {
+          type: "string",
+          description:
+            "DuckDB SELECT statement. Use `FROM spec_records` to reference all stored check records. " +
+            "Example: SELECT gate, COUNT(*) AS runs FROM spec_records GROUP BY gate ORDER BY runs DESC",
+        },
+        path: {
+          type: "string",
+          description:
+            "Optional project root. When provided, the query is scoped to that project's storage path " +
+            "instead of the global storage root.",
+        },
+        format: {
+          type: "string",
+          enum: ["json", "table", "csv"],
+          description: "Output format — json: array of objects, table: ASCII grid, csv: RFC-4180 (default: json)",
+        },
+      },
+      required: ["sql"],
     },
   },
 ];
@@ -1184,6 +1222,95 @@ async function handle_check_evidence(ctx: ToolCtx): Promise<McpResponse> {
   ));
 }
 
+// ── Query helpers ─────────────────────────────────────────────────────────────
+
+/** Render an array of row objects as RFC-4180 CSV. */
+function formatQueryCsv(rows: unknown[]): string {
+  if (!Array.isArray(rows) || rows.length === 0) return "";
+  const cols: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows as Record<string, unknown>[]) {
+    for (const key of Object.keys(row)) {
+      if (!seen.has(key)) { seen.add(key); cols.push(key); }
+    }
+  }
+  const escape = (v: unknown): string => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [
+    cols.join(","),
+    ...(rows as Record<string, unknown>[]).map(
+      (row) => cols.map((c) => escape(row[c])).join(",")
+    ),
+  ].join("\n");
+}
+
+/** Render an array of row objects as a simple ASCII grid. */
+function formatQueryTable(rows: unknown[]): string {
+  if (!Array.isArray(rows) || rows.length === 0) return "(no rows)";
+
+  // Collect all column names in insertion order
+  const cols: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows as Record<string, unknown>[]) {
+    for (const key of Object.keys(row)) {
+      if (!seen.has(key)) { seen.add(key); cols.push(key); }
+    }
+  }
+
+  // Determine column widths
+  const widths: number[] = cols.map((c) => c.length);
+  const cellValues = (rows as Record<string, unknown>[]).map((row) =>
+    cols.map((c, i) => {
+      const v = row[c];
+      const s = v == null ? "NULL" : typeof v === "object" ? JSON.stringify(v) : String(v);
+      if (s.length > widths[i]!) widths[i] = Math.min(s.length, 80);
+      return s;
+    })
+  );
+
+  const sep = "+" + widths.map((w) => "-".repeat(w + 2)).join("+") + "+";
+  const header = "|" + cols.map((c, i) => " " + c.padEnd(widths[i]!) + " ").join("|") + "|";
+  const dataRows = cellValues.map(
+    (row) => "|" + row.map((v, i) => " " + v.slice(0, widths[i]!).padEnd(widths[i]!) + " ").join("|") + "|"
+  );
+  return [sep, header, sep, ...dataRows, sep, `${rows.length} row${rows.length === 1 ? "" : "s"}`].join("\n");
+}
+
+async function handle_query(ctx: ToolCtx): Promise<McpResponse> {
+  if (!ctx.args.sql) return toMcpContent(envelope(missingArg("sql", "query"), ctx.meta));
+  const sql = String(ctx.args.sql);
+  const projectRoot = ctx.args.path ? resolve(String(ctx.args.path)) : undefined;
+  const { config: localConfig } = loadConfig(projectRoot);
+
+  // When a path is provided, scope spec_records to that project's storage subtree
+  // (org/repo/service) so the query only touches that project's records.
+  // Without a path, spec_records resolves to the full global storage root.
+  let scopeParts: string[] = [];
+  if (projectRoot && existsSync(projectRoot)) {
+    const service = detectServices(projectRoot, localConfig).services[0]!;
+    const paths = buildStoragePaths(projectRoot, service, localConfig.value.metrics.db_path);
+    scopeParts = [paths.org, paths.repo, paths.service];
+  }
+
+  try {
+    const rows = runSpecQuery(sql, localConfig.value.metrics.db_path, ...scopeParts);
+    const fmt = (ctx.args.format as string | undefined) ?? "json";
+    const output =
+      fmt === "table" ? formatQueryTable(rows) :
+      fmt === "csv"   ? formatQueryCsv(rows) :
+      rows;
+    return toMcpContent(envelope(output, ctx.meta));
+  } catch (e) {
+    return toMcpContent(envelope(
+      makeError("QUERY_ERROR", String(e), "The DuckDB query failed.", "Check your SQL syntax and ensure spec_records contains data."),
+      ctx.meta
+    ));
+  }
+}
+
 // ── Dispatch table ────────────────────────────────────────────────────────────
 
 type Handler = (ctx: ToolCtx) => Promise<McpResponse>;
@@ -1216,6 +1343,7 @@ const HANDLERS: Map<string, Handler> = new Map([
   ["metrics", handle_metrics],
   ["check_reconciliation", handle_check_reconciliation],
   ["check_evidence", handle_check_evidence],
+  ["query", handle_query],
 ]);
 
 // ── Server instructions (auto-injected into LLM context on connect) ───────────
@@ -1279,9 +1407,38 @@ tasks.md
   scaffold_spec      — generate starter templates (write:true to save to disk)
   run_gate           — check one gate: G1 G2 G3 G4 G5
   run_all            — check all gates in sequence
-  run_metrics        — quality metrics: complexity, mutation, coverage trends
+  metrics            — quality metrics: gate pass rates, compliance score, trends
+  get_rollup         — cross-project rollup and model comparison rankings
   check_assumptions  — validate assumption log against spec files
-  check_diff         — detect spec drift between requirements and design/tasks
+  diff_check         — detect spec drift between requirements and design/tasks
+  complexity         — cyclomatic and cognitive complexity analysis
+  check_mutation_score — mutation testing score and surviving mutants
+  check_reconciliation — README claims vs actual artifacts
+  check_evidence     — release and benchmark evidence verification
+  query              — run DuckDB SELECT against the Parquet metrics store
+                       (use FROM spec_records as virtual table alias)
+
+## Using the query tool for ad-hoc analytics
+
+  query is a DuckDB SELECT interface against all stored check records.
+  The virtual table alias "spec_records" resolves to all Parquet files in the store.
+
+  Useful patterns:
+    Gate pass rates:
+      SELECT gate, COUNT(*) AS runs,
+             ROUND(100.0 * SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) / COUNT(*), 1) AS pass_pct
+      FROM spec_records WHERE check_type='gate' GROUP BY gate ORDER BY gate
+
+    Recent failures:
+      SELECT timestamp, gate, status FROM spec_records
+      WHERE check_type='gate' AND status != 'PASS'
+      ORDER BY timestamp DESC LIMIT 20
+
+    Model comparison:
+      SELECT llm_model, COUNT(*) AS checks,
+             ROUND(100.0 * SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) / COUNT(*), 1) AS pass_pct
+      FROM spec_records WHERE check_type='gate'
+      GROUP BY llm_model ORDER BY pass_pct DESC
 `.trim();
 
 // ── Server bootstrap ──────────────────────────────────────────────────────────

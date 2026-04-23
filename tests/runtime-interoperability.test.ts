@@ -137,4 +137,44 @@ describe("runtime interoperability", () => {
       canonicalProjectPath(projectB),
     ].sort());
   });
+
+  it("query tool is registered and accessible via executeToolRequest", async () => {
+    // Verify tool definition is present
+    const tool = TOOL_DEFINITIONS.find((t) => t.name === "query");
+    expect(tool).toBeTruthy();
+    expect((tool?.inputSchema as { required: string[] }).required).toContain("sql");
+
+    // Simple SELECT without spec_records (no Parquet files needed)
+    const response = await executeToolRequest("query", { sql: "SELECT 42 AS answer" });
+    const parsed = JSON.parse(response.content[0]!.text) as { data: Array<{ answer: number }> };
+    expect(Array.isArray(parsed.data)).toBe(true);
+    expect(Number(parsed.data[0]?.answer)).toBe(42);
+  });
+
+  it("query tool rejects non-SELECT statements", async () => {
+    const response = await executeToolRequest("query", { sql: "DROP TABLE foo" });
+    const parsed = JSON.parse(response.content[0]!.text) as { data: { code: string } };
+    expect(parsed.data.code).toBe("QUERY_ERROR");
+  });
+
+  it("query tool supports table format output", async () => {
+    const response = await executeToolRequest("query", { sql: "SELECT 1 AS n", format: "table" });
+    const parsed = JSON.parse(response.content[0]!.text) as { data: string };
+    expect(typeof parsed.data).toBe("string");
+    expect(parsed.data).toContain("n");
+    expect(parsed.data).toContain("1");
+  });
+
+  it("query tool supports csv format output", async () => {
+    const response = await executeToolRequest("query", { sql: "SELECT 'hello' AS word, 42 AS num", format: "csv" });
+    const parsed = JSON.parse(response.content[0]!.text) as { data: string };
+    expect(typeof parsed.data).toBe("string");
+    expect(parsed.data).toContain("word,num");
+    expect(parsed.data).toContain("hello,42");
+  });
+
+  it("resolveCliCommand returns mcp mode for all non-server subcommands", () => {
+    expect(resolveCliCommand([])).toEqual({ mode: "mcp", rest: [] });
+    expect(resolveCliCommand(["gate", "G1", "--path", "."])).toEqual({ mode: "mcp", rest: ["gate", "G1", "--path", "."] });
+  });
 });
