@@ -137,9 +137,16 @@ describe("R-70 --all flag", () => {
   it("runs all adapters whose detect() returns true", async () => {
     const project = makeTmp();
     const result = await runInit({ all: true, path: project, write: true });
-    // At least one adapter should always write (cursor detect is always true in test mode)
-    expect(result.written.length + result.skipped.length).toBeGreaterThan(0);
-    expect(result.adapters_run.length).toBeGreaterThan(0);
+    // Every adapter in the registry must either run (detect returned true)
+    // or appear in result.notes as "not detected".  The total must equal the
+    // registry size regardless of which tools are installed on this machine.
+    const totalAdapters = Object.keys(ADAPTER_REGISTRY).length;
+    const notDetected = result.notes.filter((n) => n.includes("not detected")).length;
+    expect(result.adapters_run.length + notDetected).toBe(totalAdapters);
+    // Result must have the required shape.
+    expect(Array.isArray(result.written)).toBe(true);
+    expect(Array.isArray(result.skipped)).toBe(true);
+    expect(Array.isArray(result.adapters_run)).toBe(true);
   });
 });
 
