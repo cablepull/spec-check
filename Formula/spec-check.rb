@@ -6,10 +6,10 @@ class SpecCheck < Formula
   license "MIT"
 
   bottle do
-    root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.2"
-    rebuild 1
-    sha256 cellar: :any_skip_relocation, arm64_sequoia: "06793a9e423c13f823db86cc1dbd737216b0d6b7e94d5525e662629651483231"
-    sha256 cellar: :any_skip_relocation, arm64_sonoma: "adb55de7705504ac9aa6f48219063bddd904414e5b19b2132c04fd6c2a95a2e8"
+    root_url "https://github.com/cablepull/spec-check/releases/download/v0.1.3"
+    rebuild 2
+    sha256 cellar: :any_skip_relocation, arm64_sequoia: "8db38bee2e75d87fd271f54a55021d5cccfdc9df2449ac571771fa26e0c31ac0"
+    sha256 cellar: :any_skip_relocation, arm64_sonoma: "0608d99b6d04ba2627e17fce08a86bd85aee9e50e7e0f69c66ec4654ee2ae715"
   end
 
   depends_on "node@24"
