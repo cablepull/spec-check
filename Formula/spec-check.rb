@@ -65,7 +65,7 @@ class SpecCheck < Formula
   end
 
   test do
-    assert_match "0.1.2", shell_output("#{bin}/spec-check --version")
+    assert_match "0.1.3", shell_output("#{bin}/spec-check --version")
     assert_match "spec-check", shell_output("#{bin}/spec-check --help")
     # Verify DuckDB native binding loads and executes correctly.
     # This catches the case where the .node prebuilt binary is missing or
