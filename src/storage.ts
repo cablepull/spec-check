@@ -149,8 +149,14 @@ export function writeRecord(
     const tmpParquet = filePath + ".tmp.parquet";
     const serialised = Object.fromEntries(
       Object.entries(record).map(([key, value]) => {
-        if (value === undefined) return [key, null];
-        if (value === null) return [key, null];
+        // DuckDB's read_json_auto infers `null` as the JSON type in single-row
+        // files, which causes a type conflict (JSON vs VARCHAR) when a later
+        // file writes the same column as a real string.  Represent null as ""
+        // so DuckDB consistently infers VARCHAR across all files.  The read
+        // helpers (|| null / parseBoolOrNull / parseStringArray) treat "" as
+        // absent and convert it back to the correct null / [] / false default.
+        if (value === undefined) return [key, ""];
+        if (value === null) return [key, ""];
         if (Array.isArray(value)) return [key, JSON.stringify(value)];
         if (typeof value === "object") return [key, JSON.stringify(value)];
         return [key, value];
